@@ -159,45 +159,6 @@ def analyze_with_openai(client, base64_image):
         st.error(f"Error analyzing image with OpenAI: {e}")
         return None
 
-# Function to analyze image (structured analysis)
-def generate_analysis(client, vision_results, openai_description):
-    try:
-        # Prepare input for GPT
-        input_data = {
-            "vision_analysis": vision_results,
-            "openai_description": openai_description
-        }
-        
-        prompt = """
-        Based on the provided thumbnail analyses from Google Vision AI and your own image reading, create a structured analysis covering:
-        - What's happening in the thumbnail
-        - Category of video (e.g., gaming, tutorial, vlog) 
-        - Theme and mood
-        - Colors used and their significance
-        - Elements and objects present
-        - Subject impressions (emotions, expressions)
-        - Text present and its purpose
-        - Target audience
-        
-        Format your response with clear headings and bullet points for easy readability.
-        
-        Analysis data:
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a thumbnail analysis expert who can create detailed analyses based on image analysis data."},
-                {"role": "user", "content": prompt + json.dumps(input_data, indent=2)}
-            ],
-            max_tokens=800
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"Error generating analysis: {e}")
-        return None
-
 # Function to generate a specific prompt paragraph
 def generate_prompt_paragraph(client, vision_results, openai_description):
     try:
@@ -237,6 +198,30 @@ def generate_prompt_paragraph(client, vision_results, openai_description):
     except Exception as e:
         st.error(f"Error generating prompt paragraph: {e}")
         return None
+
+# Function to extract keywords from intro text
+def extract_keywords(client, intro_text):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a keyword extraction specialist."},
+                {"role": "user", "content": f"""
+                Extract the 5-7 most important keywords and phrases from this video intro/description. 
+                Focus on terms that would help find related content on YouTube.
+                Return only the keywords separated by commas, no explanation.
+                
+                Intro: {intro_text}
+                """}
+            ],
+            max_tokens=100
+        )
+        
+        keywords = response.choices[0].message.content.strip()
+        return keywords
+    except Exception as e:
+        st.error(f"Error extracting keywords: {e}")
+        return intro_text
 
 # Function to get date range based on timeframe
 def get_date_range(timeframe):
@@ -278,19 +263,24 @@ def is_youtube_short(duration_str):
     return total_seconds <= 60
 
 # Function to search YouTube videos using requests
-def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, timeframe):
+def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, timeframe, openai_client):
     try:
+        # Extract keywords from the intro for better search
+        keywords = extract_keywords(openai_client, intro_text)
+        st.info(f"Searching YouTube for: {keywords}")
+        
         # Get date range based on timeframe
         published_after = get_date_range(timeframe)
         
         # Prepare search parameters for YouTube Data API
         search_params = {
-            'q': intro_text,
+            'q': keywords,  # Use extracted keywords instead of raw intro
             'part': 'snippet',
             'maxResults': min(max_results * 2, 50),  # Get more to filter later
             'type': 'video',
-            'order': 'viewCount',  # Sort by view count
-            'key': youtube_api_key
+            'order': 'relevance',  # Changed to relevance for better semantic matching
+            'key': youtube_api_key,
+            'relevanceLanguage': 'en'  # Focus on English content for better matching
         }
         
         # Add published date filter if not lifetime
@@ -350,6 +340,7 @@ def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, 
                 video_data = {
                     'id': item['id'],
                     'title': item['snippet']['title'],
+                    'description': item['snippet'].get('description', ''),
                     'channel': item['snippet']['channelTitle'],
                     'channel_id': item['snippet']['channelId'],
                     'views': view_count,
@@ -407,24 +398,52 @@ def calculate_outlier_scores(youtube_api_key, videos):
                     total_videos = int(channel_stats.get('videoCount', 0))
                     total_views = int(channel_stats.get('viewCount', 0))
                     
-                    # Approximate average views
-                    avg_views = total_views / total_videos if total_videos > 0 else 0
+                    # Calculate separate averages for shorts and regular videos
+                    # We'll approximate using the global ratio: 80% of channel views are regular, 20% are shorts
+                    # This is a rough estimate and would vary by channel
                     
-                    # Set avg_views for the channel
-                    channels[channel_id]['avg_views'] = avg_views
+                    if 'shorts' in data and 'regular' in data:
+                        if len(data['shorts']) > 0 and len(data['regular']) > 0:
+                            # If we have both shorts and regular videos, try to estimate per type
+                            avg_views_shorts = (total_views * 0.2) / (total_videos * 0.3) if total_videos > 0 else 0
+                            avg_views_regular = (total_views * 0.8) / (total_videos * 0.7) if total_videos > 0 else 0
+                            
+                            # Add these to the channel data
+                            channels[channel_id]['avg_views_shorts'] = avg_views_shorts
+                            channels[channel_id]['avg_views_regular'] = avg_views_regular
+                        else:
+                            # If we only have one type, just use the overall average
+                            avg_views = total_views / total_videos if total_videos > 0 else 0
+                            channels[channel_id]['avg_views_shorts'] = avg_views
+                            channels[channel_id]['avg_views_regular'] = avg_views
+                    else:
+                        # Fallback to overall average
+                        avg_views = total_views / total_videos if total_videos > 0 else 0
+                        channels[channel_id]['avg_views_shorts'] = avg_views
+                        channels[channel_id]['avg_views_regular'] = avg_views
                 else:
-                    # If can't get channel stats, use average of current videos
-                    regular_avg = sum(v['views'] for v in data['regular']) / len(data['regular']) if data['regular'] else 0
-                    channels[channel_id]['avg_views'] = regular_avg
+                    # If can't get channel stats, use current videos as sample
+                    shorts_avg = sum(v['views'] for v in data.get('shorts', [])) / len(data['shorts']) if data.get('shorts', []) else 0
+                    regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data['regular']) if data.get('regular', []) else 0
+                    
+                    channels[channel_id]['avg_views_shorts'] = shorts_avg if shorts_avg > 0 else 1
+                    channels[channel_id]['avg_views_regular'] = regular_avg if regular_avg > 0 else 1
             except Exception as e:
                 # If API call fails, estimate from what we have
-                regular_avg = sum(v['views'] for v in data['regular']) / len(data['regular']) if data['regular'] else 0
-                channels[channel_id]['avg_views'] = regular_avg
+                shorts_avg = sum(v['views'] for v in data.get('shorts', [])) / len(data['shorts']) if data.get('shorts', []) else 0
+                regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data['regular']) if data.get('regular', []) else 0
+                
+                channels[channel_id]['avg_views_shorts'] = shorts_avg if shorts_avg > 0 else 1
+                channels[channel_id]['avg_views_regular'] = regular_avg if regular_avg > 0 else 1
         
         # Calculate outlier scores
         for video in videos:
             channel_id = video['channel_id']
-            avg_views = channels[channel_id]['avg_views']
+            
+            if video['is_short']:
+                avg_views = channels[channel_id]['avg_views_shorts']
+            else:
+                avg_views = channels[channel_id]['avg_views_regular']
             
             if avg_views > 0:
                 video['outlier_score'] = video['views'] / avg_views
@@ -488,14 +507,16 @@ def analyze_thumbnails(videos, vision_client, openai_client):
 # Function to generate optimal thumbnail prompt based on multiple analyses
 def generate_optimal_prompt(client, thumbnail_analyses, intro_text):
     try:
-        # Extract prompts and video stats
+        # Extract prompts, video stats, and descriptions
         analysis_data = []
         for analysis in thumbnail_analyses:
             analysis_data.append({
                 'prompt': analysis['prompt'],
                 'views': analysis['video']['views'],
                 'outlier_score': analysis['video']['outlier_score'],
-                'is_short': analysis['video']['is_short']
+                'is_short': analysis['video']['is_short'],
+                'title': analysis['video']['title'],
+                'description': analysis['video']['description'][:300] if len(analysis['video']['description']) > 300 else analysis['video']['description']
             })
         
         prompt = f"""
@@ -536,7 +557,7 @@ def generate_optimal_prompt(client, thumbnail_analyses, intro_text):
 # Main app
 def main():
     st.title("YouTube Thumbnail Analyzer")
-    st.write("Analyze thumbnails, find successful videos, and generate optimal thumbnail designs.")
+    st.write("Find successful videos, analyze their thumbnails, and generate optimal thumbnail designs.")
     
     # Initialize and check API clients
     vision_client, openai_client, youtube_api_key = setup_credentials()
@@ -545,151 +566,64 @@ def main():
         st.error("OpenAI client not initialized. Please check your API key.")
         return
     
-    # Create tabs for different functionalities
-    tab1, tab2 = st.tabs(["Single Thumbnail Analysis", "YouTube Search & Analysis"])
+    # Video intro input
+    intro_text = st.text_area("Enter your video intro/description:", height=100)
     
-    # Tab 1: Single Thumbnail Analysis
-    with tab1:
-        st.header("Analyze a Single Thumbnail")
-        
-        # File uploader
-        uploaded_file = st.file_uploader("Choose a thumbnail image...", type=["jpg", "jpeg", "png"])
-        
-        if uploaded_file is not None:
-            # Display the uploaded image
-            image = Image.open(uploaded_file)
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.image(image, caption="Uploaded Thumbnail", use_column_width=True)
-            
-            # Convert to bytes for API processing
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format=image.format if image.format else 'JPEG')
-            img_byte_arr = img_byte_arr.getvalue()
-            
-            with st.spinner("Analyzing thumbnail..."):
-                # Process with Google Vision API
-                vision_results = None
-                if vision_client:
-                    vision_results = analyze_with_vision(img_byte_arr, vision_client)
-                
-                # Process with OpenAI
-                base64_image = encode_image(img_byte_arr)
-                openai_description = analyze_with_openai(openai_client, base64_image)
-                
-                # Generate both analysis and prompt separately
-                if vision_results:
-                    # Generate structured analysis
-                    analysis = generate_analysis(openai_client, vision_results, openai_description)
-                    
-                    # Display the Analysis section
-                    st.subheader("Detailed Analysis")
-                    st.markdown(analysis)
-                    
-                    # Create a collapsible container for Vision API results
-                    with st.expander("View Raw Vision API Results"):
-                        st.json(vision_results)
-                        
-                    # Generate the specific prompt paragraph in a separate call
-                    st.subheader("Thumbnail Prompt")
-                    with st.spinner("Generating specific prompt..."):
-                        prompt_paragraph = generate_prompt_paragraph(openai_client, vision_results, openai_description)
-                        
-                        # Display prompt in a text area for easy copying
-                        st.text_area("Copy this prompt:", value=prompt_paragraph, height=200)
-                        
-                        # Add a download button for just the prompt
-                        st.download_button(
-                            label="Download Prompt",
-                            data=prompt_paragraph,
-                            file_name="thumbnail_prompt.txt",
-                            mime="text/plain"
-                        )
-                else:
-                    # Use only OpenAI description if Vision API is not available
-                    st.warning("Google Vision API results not available. Analysis will be based only on OpenAI's image understanding.")
-                    
-                    # Generate structured analysis
-                    analysis = generate_analysis(openai_client, {"no_vision_api": True}, openai_description)
-                    
-                    # Display the Analysis section
-                    st.subheader("Detailed Analysis")
-                    st.markdown(analysis)
-                    
-                    # Generate the specific prompt paragraph in a separate call
-                    st.subheader("Thumbnail Prompt")
-                    with st.spinner("Generating specific prompt..."):
-                        prompt_paragraph = generate_prompt_paragraph(openai_client, {"no_vision_api": True}, openai_description)
-                        
-                        # Display prompt in a text area for easy copying
-                        st.text_area("Copy this prompt:", value=prompt_paragraph, height=200)
-                        
-                        # Add a download button for just the prompt
-                        st.download_button(
-                            label="Download Prompt",
-                            data=prompt_paragraph,
-                            file_name="thumbnail_prompt.txt",
-                            mime="text/plain"
-                        )
+    # Search configuration
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Tab 2: YouTube Search & Analysis
-    with tab2:
-        st.header("Find & Analyze Similar Videos")
-        
-        # Video intro input
-        intro_text = st.text_area("Enter your video intro/description:", height=100)
-        
-        # Search configuration
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            video_type = st.selectbox(
-                "Content Type",
-                ["All", "Regular Videos", "Shorts"]
-            )
-        
-        with col2:
-            timeframe = st.selectbox(
-                "Upload Timeframe",
-                ["24 hours", "48 hours", "7 days", "15 days", "1 month", "3 months", "1 year", "Lifetime"]
-            )
-        
-        with col3:
-            max_results = st.number_input("Number of Results", min_value=1, max_value=10, value=5)
-        
-        with col4:
-            sort_by = st.selectbox(
-                "Sort Results By",
-                ["Views", "Outlier Score"]
-            )
-        
-        # Search button
-        if youtube_api_key:
-            search_button = st.button("Search YouTube")
-        else:
-            st.warning("YouTube API key is required for searching. Please provide a valid API key.")
-            search_button = False
-        
-        if search_button and intro_text:
-            with st.spinner("Searching YouTube and analyzing thumbnails..."):
-                # Search YouTube
-                videos = search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, timeframe)
+    with col1:
+        video_type = st.selectbox(
+            "Content Type",
+            ["All", "Regular Videos", "Shorts"]
+        )
+    
+    with col2:
+        timeframe = st.selectbox(
+            "Upload Timeframe",
+            ["24 hours", "48 hours", "7 days", "15 days", "1 month", "3 months", "1 year", "Lifetime"]
+        )
+    
+    with col3:
+        max_results = st.number_input("Number of Results", min_value=1, max_value=10, value=5)
+    
+    with col4:
+        sort_by = st.selectbox(
+            "Sort Results By",
+            ["Views", "Outlier Score"]
+        )
+    
+    # Search button
+    if youtube_api_key:
+        search_button = st.button("Search YouTube")
+    else:
+        st.warning("YouTube API key is required for searching. Please provide a valid API key.")
+        search_button = False
+    
+    if search_button and intro_text:
+        with st.spinner("Searching YouTube and analyzing thumbnails..."):
+            # Search YouTube
+            videos = search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, timeframe, openai_client)
+            
+            if not videos:
+                st.warning("No videos found matching your criteria. Try a different search.")
+            else:
+                # Sort videos
+                if sort_by == "Views":
+                    videos.sort(key=lambda x: x['views'], reverse=True)
+                else:  # Outlier Score
+                    videos.sort(key=lambda x: x['outlier_score'], reverse=True)
                 
-                if not videos:
-                    st.warning("No videos found matching your criteria. Try a different search.")
-                else:
-                    # Sort videos
-                    if sort_by == "Views":
-                        videos.sort(key=lambda x: x['views'], reverse=True)
-                    else:  # Outlier Score
-                        videos.sort(key=lambda x: x['outlier_score'], reverse=True)
-                    
-                    # Analyze thumbnails
-                    thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
-                    
-                    # Display results
-                    st.subheader(f"Found {len(videos)} Videos")
-                    
+                # Analyze thumbnails
+                thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
+                
+                # Display results
+                st.subheader(f"Found {len(videos)} Videos")
+                
+                # Create tabs - one for displaying videos, one for optimal prompt
+                results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
+                
+                with results_tab:
                     # Create columns for videos
                     for i, analysis in enumerate(thumbnail_analyses):
                         video = analysis['video']
@@ -709,19 +643,16 @@ def main():
                             st.markdown(f"**Type:** {'Short' if video['is_short'] else 'Regular Video'}")
                         
                         with col2:
-                            # Thumbnail analysis
-                            with st.expander("Thumbnail Analysis", expanded=False):
-                                st.markdown(analysis['openai_description'])
-                            
                             # Thumbnail prompt
-                            with st.expander("Thumbnail Prompt", expanded=True):
-                                st.markdown(analysis['prompt'])
-                                
-                                # Link to video
-                                st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
+                            st.markdown("**Thumbnail Analysis:**")
+                            st.markdown(analysis['prompt'])
+                            
+                            # Link to video
+                            st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
                         
                         st.divider()
-                    
+                
+                with optimal_tab:
                     # Generate optimal thumbnail prompt
                     st.subheader("Optimal Thumbnail Design")
                     with st.spinner("Generating optimal thumbnail design..."):
