@@ -19,13 +19,44 @@ st.set_page_config(
     layout="wide"
 )
 
-# Function to setup API credentials (API status messages removed)
+# JSON for channel filtering (finance category)
+CHANNELS = {
+    "finance": {
+        "USA": {
+            "Graham Stephan": "UCV6KDgJskWaEckne5aPA0aQ",
+            "Mark Tilbury": "UCxgAuX3XZROujMmGphN_scA",
+            "Andrei Jikh": "UCGy7SkBjcIAgTiwkXEtPnYg",
+            "Humphrey Yang": "UCFBpVaKCC0ajGps1vf0AgBg",
+            "Brian Jung": "UCQglaVhGOBI0BR5S6IJnQPg",
+            "Nischa": "UCQpPo9BNwezg54N9hMFQp6Q",
+            "Newmoney": "Newmoney",
+            "I will teach you to be rich": "UC7ZddA__ewP3AtDefjl_tWg"
+        },
+        "India": {
+            "Pranjal Kamra": "UCwAdQUuPT6laN-AQR17fe1g",
+            "Ankur Warikoo": "UCHYubNqqsWGTN2SF-y8jPmQ",
+            "Shashank Udupa": "UCdUEJABvX8XKu3HyDSczqhA",
+            "Finance with Sharan": "UCwVEhEzsjLym_u1he4XWFkg",
+            "Akshat Srivastava": "UCqW8jxh4tH1Z1sWPbkGWL4g",
+            "Labour Law Advisor": "UCVOTBwF0vnSxMRIbfSE_K_g",
+            "Udayan Adhye": "UCLQOtbB1COQwjcCEPB2pa8w",
+            "Sanjay Kathuria": "UCTMr5SnqHtCM2lMAI31gtFA",
+            "Financially free": "UCkGjGT2B7LoDyL2T4pHsUqw",
+            "Powerup Money": "UC_eLanNOt5ZiKkZA2Fay8SA",
+            "Shankar Nath": "UCtnItzU7q_bA1eoEBjqcVrw",
+            "Wint Weath": "UCggPd3Vf9ooG2r4I_ZNWBzA",
+            "Invest aaj for Kal": "UCWHCXSKASuSzao_pplQ7SPw",
+            "Rahul Jain": "UC2MU9phoTYy5sigZCkrvwiw"
+        }
+    }
+}
+
+# Function to setup API credentials (without visible status messages)
 def setup_credentials():
     vision_client = None
     openai_client = None
     youtube_api_key = None
 
-    # Google Vision API
     try:
         if 'GOOGLE_CREDENTIALS' in st.secrets:
             credentials_dict = st.secrets["GOOGLE_CREDENTIALS"]
@@ -46,7 +77,6 @@ def setup_credentials():
     except Exception as e:
         st.error(f"Error loading Google Vision API credentials: {e}")
 
-    # OpenAI API
     try:
         api_key = None
         if 'OPENAI_API_KEY' in st.secrets:
@@ -63,7 +93,6 @@ def setup_credentials():
     except Exception as e:
         st.error(f"Error setting up OpenAI API: {e}")
 
-    # YouTube API
     try:
         if 'YOUTUBE_API_KEY' in st.secrets:
             youtube_api_key = st.secrets["YOUTUBE_API_KEY"]
@@ -241,35 +270,66 @@ def is_youtube_short(duration_str):
         total_seconds += int(seconds.group(1))
     return total_seconds < 180
 
-# Function to search YouTube videos using requests
-def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client):
+# Function to search YouTube videos with region filtering
+def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client, region):
     try:
         keywords = extract_keywords(openai_client, user_text, input_type)
         st.info(f"Searching YouTube for: {keywords}")
         published_after = get_date_range(timeframe)
-        search_params = {
-            'q': keywords,
-            'part': 'snippet',
-            'maxResults': min(max_results * 2, 50),
-            'type': 'video',
-            'order': 'relevance',
-            'key': youtube_api_key,
-            'relevanceLanguage': 'en'
-        }
-        if published_after:
-            search_params['publishedAfter'] = published_after
+        video_ids = []
         search_url = "https://www.googleapis.com/youtube/v3/search"
-        search_response = requests.get(search_url, params=search_params)
-        search_data = search_response.json()
-        if 'error' in search_data:
-            st.error(f"YouTube API error: {search_data['error']['message']}")
-            return []
-        if 'items' not in search_data or not search_data['items']:
-            st.warning("No videos found matching your search criteria.")
-            return []
-        video_ids = [item['id']['videoId'] for item in search_data['items']]
+        if region == "Global":
+            search_params = {
+                'q': keywords,
+                'part': 'snippet',
+                'maxResults': min(max_results * 2, 50),
+                'type': 'video',
+                'order': 'relevance',
+                'key': youtube_api_key,
+                'relevanceLanguage': 'en'
+            }
+            if published_after:
+                search_params['publishedAfter'] = published_after
+            search_response = requests.get(search_url, params=search_params)
+            search_data = search_response.json()
+            if 'error' in search_data:
+                st.error(f"YouTube API error: {search_data['error']['message']}")
+                return []
+            if 'items' not in search_data or not search_data['items']:
+                st.warning("No videos found matching your search criteria.")
+                return []
+            video_ids = [item['id']['videoId'] for item in search_data['items'] if 'videoId' in item['id']]
+        else:
+            # For USA or India, restrict search to specific channels from the JSON
+            channels = list(CHANNELS['finance'][region].values())
+            for channel_id in channels:
+                # Skip invalid channel IDs (e.g. "Newmoney" is not a valid channel ID)
+                if not channel_id.startswith("UC"):
+                    continue
+                search_params = {
+                    'q': keywords,
+                    'channelId': channel_id,
+                    'part': 'snippet',
+                    'maxResults': min(max_results, 50),
+                    'type': 'video',
+                    'order': 'relevance',
+                    'key': youtube_api_key,
+                    'relevanceLanguage': 'en'
+                }
+                if published_after:
+                    search_params['publishedAfter'] = published_after
+                channel_response = requests.get(search_url, params=search_params)
+                channel_data = channel_response.json()
+                if 'items' in channel_data:
+                    for item in channel_data['items']:
+                        if 'videoId' in item['id']:
+                            video_ids.append(item['id']['videoId'])
         if not video_ids:
             return []
+        # Deduplicate video IDs
+        video_ids = list(set(video_ids))
+        # Limit to the desired number of results
+        video_ids = video_ids[:max_results]
         videos_url = "https://www.googleapis.com/youtube/v3/videos"
         videos_params = {
             'part': 'snippet,statistics,contentDetails',
@@ -278,7 +338,7 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
         }
         videos_response = requests.get(videos_url, params=videos_params)
         videos_data = videos_response.json()
-        videos = []
+        videos_list = []
         for item in videos_data.get('items', []):
             duration = item['contentDetails']['duration']
             is_short = is_youtube_short(duration)
@@ -301,9 +361,9 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                     'is_short': is_short,
                     'duration': duration
                 }
-                videos.append(video_data)
-        videos = calculate_outlier_scores(youtube_api_key, videos)
-        return videos[:max_results]
+                videos_list.append(video_data)
+        videos_list = calculate_outlier_scores(youtube_api_key, videos_list)
+        return videos_list
     except Exception as e:
         st.error(f"Error searching YouTube videos: {e}")
         return []
@@ -400,7 +460,7 @@ def analyze_thumbnails(videos, vision_client, openai_client):
             st.error(f"Error analyzing thumbnail for video {video['id']}: {e}")
     return results
 
-# Function to generate optimal thumbnail prompt with added elements
+# Function to generate optimal thumbnail prompt with added design elements
 def generate_optimal_prompt(client, thumbnail_analyses, user_text):
     try:
         analysis_data = []
@@ -450,16 +510,19 @@ Your output must be highly actionable so that a designer can create the thumbnai
 def main():
     st.title("YouTube Thumbnail Analyzer")
     st.write("Find successful videos, analyze their thumbnails, and generate optimal thumbnail designs.")
-
+    
     # Initialize API clients silently
     vision_client, openai_client, youtube_api_key = setup_credentials()
     if not openai_client:
         st.error("OpenAI client not initialized. Please check your API key.")
         return
 
-    # Option to choose between Title and Intro
+    # Option to choose between Title and Intro for input
     input_type = st.selectbox("Select Input Type", ["Title", "Intro"])
     user_text = st.text_area(f"Enter your video {input_type.lower()}:", height=100)
+
+    # New Region filter
+    region_filter = st.selectbox("Select Region", ["Global", "USA", "India"])
 
     # Search configuration
     col1, col2, col3, col4 = st.columns(4)
@@ -480,7 +543,7 @@ def main():
 
     if search_button and user_text:
         with st.spinner("Searching YouTube and analyzing thumbnails..."):
-            videos = search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client)
+            videos = search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client, region_filter)
             if not videos:
                 st.warning("No videos found matching your criteria. Try a different search.")
             else:
