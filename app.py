@@ -1,36 +1,4 @@
-# Function to generate prompt variations
-def generate_prompt_variations(client, original_prompt):
-    try:
-        variation_prompt = f"""
-        Below is a detailed description of a YouTube thumbnail:
-        
-        {original_prompt}
-        
-        Create TWO alternative prompt variations that could describe a thumbnail with the same core message and purpose, but with different visual elements, styles, or approaches.
-        
-        Each variation should:
-        1. Maintain the same overall message and purpose of the thumbnail
-        2. Change visual elements, colors, composition, or style
-        3. Be a single cohesive paragraph (not bullet points)
-        4. Be detailed enough that someone could create the thumbnail from the description
-        5. Be optimized for AI image generation (hyper-realistic style)
-        
-        Label them clearly as "VARIATION 1:" and "VARIATION 2:" and make them distinctly different from each other and from the original.
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a creative thumbnail designer who creates varied but purposeful alternatives."},
-                {"role": "user", "content": variation_prompt}
-            ],
-            max_tokens=1200
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"Error generating prompt variations: {e}")
-        return Noneimport streamlit as st
+import streamlit as st
 import os
 import io
 import json
@@ -369,6 +337,40 @@ def generate_prompt_paragraph(client, vision_results, openai_description):
         return response.choices[0].message.content
     except Exception as e:
         st.error(f"Error generating prompt paragraph: {e}")
+        return None
+
+# Function to generate prompt variations
+def generate_prompt_variations(client, original_prompt):
+    try:
+        variation_prompt = f"""
+        Below is a detailed description of a YouTube thumbnail:
+        
+        {original_prompt}
+        
+        Create TWO alternative prompt variations that could describe a thumbnail with the same core message and purpose, but with different visual elements, styles, or approaches.
+        
+        Each variation should:
+        1. Maintain the same overall message and purpose of the thumbnail
+        2. Change visual elements, colors, composition, or style
+        3. Be a single cohesive paragraph (not bullet points)
+        4. Be detailed enough that someone could create the thumbnail from the description
+        5. Be optimized for AI image generation (hyper-realistic style)
+        
+        Label them clearly as "VARIATION 1:" and "VARIATION 2:" and make them distinctly different from each other and from the original.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a creative thumbnail designer who creates varied but purposeful alternatives."},
+                {"role": "user", "content": variation_prompt}
+            ],
+            max_tokens=1200
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Error generating prompt variations: {e}")
         return None
 
 # Function to generate image based on prompt
