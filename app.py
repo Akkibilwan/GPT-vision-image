@@ -3,7 +3,6 @@ import os
 import io
 import json
 import requests
-import sqlite3
 from PIL import Image
 from google.cloud import vision
 from google.oauth2 import service_account
@@ -12,57 +11,47 @@ import base64
 import time
 from datetime import datetime, timedelta
 import re
-import hashlib
 
-#######################
-# SQLite Caching Setup
-#######################
+# Set page configuration
+st.set_page_config(
+    page_title="YouTube Thumbnail Analyzer",
+    page_icon="🔍",
+    layout="wide"
+)
 
-def init_db():
-    conn = sqlite3.connect("sessions.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS session_cache (
-        session_key TEXT PRIMARY KEY,
-        optimal_prompts TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    conn.commit()
-    return conn
+# JSON for channel filtering (finance category)
+CHANNELS = {
+    "finance": {
+        "USA": {
+            "Graham Stephan": "UCV6KDgJskWaEckne5aPA0aQ",
+            "Mark Tilbury": "UCxgAuX3XZROujMmGphN_scA",
+            "Andrei Jikh": "UCGy7SkBjcIAgTiwkXEtPnYg",
+            "Humphrey Yang": "UCFBpVaKCC0ajGps1vf0AgBg",
+            "Brian Jung": "UCQglaVhGOBI0BR5S6IJnQPg",
+            "Nischa": "UCQpPo9BNwezg54N9hMFQp6Q",
+            "Newmoney": "Newmoney",
+            "I will teach you to be rich": "UC7ZddA__ewP3AtDefjl_tWg"
+        },
+        "India": {
+            "Pranjal Kamra": "UCwAdQUuPT6laN-AQR17fe1g",
+            "Ankur Warikoo": "UCHYubNqqsWGTN2SF-y8jPmQ",
+            "Shashank Udupa": "UCdUEJABvX8XKu3HyDSczqhA",
+            "Finance with Sharan": "UCwVEhEzsjLym_u1he4XWFkg",
+            "Akshat Srivastava": "UCqW8jxh4tH1Z1sWPbkGWL4g",
+            "Labour Law Advisor": "UCVOTBwF0vnSxMRIbfSE_K_g",
+            "Udayan Adhye": "UCLQOtbB1COQwjcCEPB2pa8w",
+            "Sanjay Kathuria": "UCTMr5SnqHtCM2lMAI31gtFA",
+            "Financially free": "UCkGjGT2B7LoDyL2T4pHsUqw",
+            "Powerup Money": "UC_eLanNOt5ZiKkZA2Fay8SA",
+            "Shankar Nath": "UCtnItzU7q_bA1eoEBjqcVrw",
+            "Wint Weath": "UCggPd3Vf9ooG2r4I_ZNWBzA",
+            "Invest aaj for Kal": "UCWHCXSKASuSzao_pplQ7SPw",
+            "Rahul Jain": "UC2MU9phoTYy5sigZCkrvwiw"
+        }
+    }
+}
 
-def create_session_key(user_text, input_type, region, video_type, timeframe, max_results, sort_by):
-    key_str = f"{user_text}_{input_type}_{region}_{video_type}_{timeframe}_{max_results}_{sort_by}"
-    return hashlib.md5(key_str.encode('utf-8')).hexdigest()
-
-def get_cached_session(conn, session_key):
-    cursor = conn.cursor()
-    cursor.execute("SELECT optimal_prompts FROM session_cache WHERE session_key = ?", (session_key,))
-    row = cursor.fetchone()
-    return row[0] if row else None
-
-def cache_session(conn, session_key, optimal_prompts):
-    cursor = conn.cursor()
-    cursor.execute("REPLACE INTO session_cache (session_key, optimal_prompts) VALUES (?, ?)",
-                   (session_key, optimal_prompts))
-    conn.commit()
-
-#######################
-# Additional Matching Function
-#######################
-
-def compute_match_score(video, query_keywords):
-    """Compute a simple match score based on how many of the query keywords appear in the video's title and description."""
-    keywords = [kw.strip().lower() for kw in query_keywords.split(",") if kw.strip()]
-    text = (video['title'] + " " + video['description']).lower()
-    # Count each keyword that appears at least once.
-    score = sum(1 for kw in keywords if kw in text)
-    return score
-
-#######################
-# API & Analysis Functions
-#######################
-
+# Function to setup API credentials (without visible status messages)
 def setup_credentials():
     vision_client = None
     openai_client = None
@@ -118,6 +107,7 @@ def setup_credentials():
 
     return vision_client, openai_client, youtube_api_key
 
+# Function to analyze image with Google Vision API
 def analyze_with_vision(image_bytes, vision_client):
     try:
         image = vision.Image(content=image_bytes)
@@ -149,9 +139,11 @@ def analyze_with_vision(image_bytes, vision_client):
         st.error(f"Error analyzing image with Google Vision API: {e}")
         return None
 
+# Function to encode image to base64 for OpenAI
 def encode_image(image_bytes):
     return base64.b64encode(image_bytes).decode('utf-8')
 
+# Function to analyze image with OpenAI using the new interface
 def analyze_with_openai(client, base64_image):
     try:
         response = client.ChatCompletion.create(
@@ -177,6 +169,7 @@ def analyze_with_openai(client, base64_image):
         st.error(f"Error analyzing image with OpenAI: {e}")
         return None
 
+# Function to generate a specific prompt paragraph
 def generate_prompt_paragraph(client, vision_results, openai_description):
     try:
         input_data = {
@@ -212,6 +205,7 @@ Analysis data:
         st.error(f"Error generating prompt paragraph: {e}")
         return None
 
+# Function to extract keywords from input text based on type (Title or Intro)
 def extract_keywords(client, user_text, input_type):
     try:
         if input_type == "Title":
@@ -244,6 +238,7 @@ Intro: {user_text}
         st.error(f"Error extracting keywords: {e}")
         return user_text
 
+# Function to get date range based on timeframe
 def get_date_range(timeframe):
     now = datetime.utcnow()
     if timeframe == "24 hours":
@@ -260,10 +255,11 @@ def get_date_range(timeframe):
         start_date = now - timedelta(days=90)
     elif timeframe == "1 year":
         start_date = now - timedelta(days=365)
-    else:
+    else:  # lifetime
         return None
     return start_date.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+# Function to check if a video is a Short (duration < 3 minutes)
 def is_youtube_short(duration_str):
     minutes = re.search(r'(\d+)M', duration_str)
     seconds = re.search(r'(\d+)S', duration_str)
@@ -274,38 +270,7 @@ def is_youtube_short(duration_str):
         total_seconds += int(seconds.group(1))
     return total_seconds < 180
 
-# JSON for channel filtering (finance category)
-CHANNELS = {
-    "finance": {
-        "USA": {
-            "Graham Stephan": "UCV6KDgJskWaEckne5aPA0aQ",
-            "Mark Tilbury": "UCxgAuX3XZROujMmGphN_scA",
-            "Andrei Jikh": "UCGy7SkBjcIAgTiwkXEtPnYg",
-            "Humphrey Yang": "UCFBpVaKCC0ajGps1vf0AgBg",
-            "Brian Jung": "UCQglaVhGOBI0BR5S6IJnQPg",
-            "Nischa": "UCQpPo9BNwezg54N9hMFQp6Q",
-            "Newmoney": "Newmoney",
-            "I will teach you to be rich": "UC7ZddA__ewP3AtDefjl_tWg"
-        },
-        "India": {
-            "Pranjal Kamra": "UCwAdQUuPT6laN-AQR17fe1g",
-            "Ankur Warikoo": "UCHYubNqqsWGTN2SF-y8jPmQ",
-            "Shashank Udupa": "UCdUEJABvX8XKu3HyDSczqhA",
-            "Finance with Sharan": "UCwVEhEzsjLym_u1he4XWFkg",
-            "Akshat Srivastava": "UCqW8jxh4tH1Z1sWPbkGWL4g",
-            "Labour Law Advisor": "UCVOTBwF0vnSxMRIbfSE_K_g",
-            "Udayan Adhye": "UCLQOtbB1COQwjcCEPB2pa8w",
-            "Sanjay Kathuria": "UCTMr5SnqHtCM2lMAI31gtFA",
-            "Financially free": "UCkGjGT2B7LoDyL2T4pHsUqw",
-            "Powerup Money": "UC_eLanNOt5ZiKkZA2Fay8SA",
-            "Shankar Nath": "UCtnItzU7q_bA1eoEBjqcVrw",
-            "Wint Weath": "UCggPd3Vf9ooG2r4I_ZNWBzA",
-            "Invest aaj for Kal": "UCWHCXSKASuSzao_pplQ7SPw",
-            "Rahul Jain": "UC2MU9phoTYy5sigZCkrvwiw"
-        }
-    }
-}
-
+# Function to search YouTube videos with region filtering
 def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client, region):
     try:
         keywords = extract_keywords(openai_client, user_text, input_type)
@@ -335,8 +300,10 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                 return []
             video_ids = [item['id']['videoId'] for item in search_data['items'] if 'videoId' in item['id']]
         else:
+            # For USA or India, restrict search to specific channels from the JSON
             channels = list(CHANNELS['finance'][region].values())
             for channel_id in channels:
+                # Skip invalid channel IDs (e.g. "Newmoney" is not a valid channel ID)
                 if not channel_id.startswith("UC"):
                     continue
                 search_params = {
@@ -359,7 +326,9 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                             video_ids.append(item['id']['videoId'])
         if not video_ids:
             return []
+        # Deduplicate video IDs
         video_ids = list(set(video_ids))
+        # Limit to the desired number of results
         video_ids = video_ids[:max_results]
         videos_url = "https://www.googleapis.com/youtube/v3/videos"
         videos_params = {
@@ -392,19 +361,14 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                     'is_short': is_short,
                     'duration': duration
                 }
-                # Compute a match score based on title and description overlap with query keywords
-                video_data['match_score'] = compute_match_score(video_data, keywords)
                 videos_list.append(video_data)
-        # Now sort based on chosen criteria combined with match score:
-        if sort_by == "Views":
-            videos_list.sort(key=lambda v: v['views'] * (v['match_score'] + 1), reverse=True)
-        else:
-            videos_list.sort(key=lambda v: v['outlier_score'] * (v['match_score'] + 1), reverse=True)
+        videos_list = calculate_outlier_scores(youtube_api_key, videos_list)
         return videos_list
     except Exception as e:
         st.error(f"Error searching YouTube videos: {e}")
         return []
 
+# Function to calculate outlier scores using requests
 def calculate_outlier_scores(youtube_api_key, videos):
     try:
         channels = {}
@@ -468,6 +432,7 @@ def calculate_outlier_scores(youtube_api_key, videos):
             video['outlier_score'] = 1.0
         return videos
 
+# Function to download and analyze thumbnails
 def analyze_thumbnails(videos, vision_client, openai_client):
     results = []
     for video in videos:
@@ -495,11 +460,8 @@ def analyze_thumbnails(videos, vision_client, openai_client):
             st.error(f"Error analyzing thumbnail for video {video['id']}: {e}")
     return results
 
-#######################
-# Optimal Prompt Generation with 4 Variations
-#######################
-
-def generate_optimal_prompts(client, thumbnail_analyses, user_text):
+# Function to generate optimal thumbnail prompt with added design elements
+def generate_optimal_prompt(client, thumbnail_analyses, user_text):
     try:
         analysis_data = []
         for analysis in thumbnail_analyses:
@@ -511,62 +473,58 @@ def generate_optimal_prompts(client, thumbnail_analyses, user_text):
                 'title': analysis['video']['title'],
                 'description': analysis['video']['description'][:300] if len(analysis['video']['description']) > 300 else analysis['video']['description']
             })
-        base_context = f"""
+        prompt = f"""
+You are a YouTube thumbnail expert. I need you to analyze multiple successful thumbnails and generate ONE optimal thumbnail design guideline.
+
+Here's the input for my video (it may be a Title or an Intro/Description): "{user_text}"
+
 Below are analyses of {len(analysis_data)} successful YouTube thumbnails in this niche, along with their view counts and outlier scores:
 {json.dumps(analysis_data, indent=2)}
 
-Based on these analyses and the following video input:
-"{user_text}"
+Based on these analyses and my input, create a SINGLE COHESIVE PARAGRAPH that describes the optimal thumbnail design for my video. Your paragraph should:
+1. Identify common patterns among the most successful thumbnails (those with high views and outlier scores).
+2. Suggest specific colors, layout, text, and visual elements.
+3. Describe exactly how these elements should be arranged.
+4. Explain how the thumbnail should capture the essence of my video input.
+5. Include emotional triggers that will maximize click-through rates.
+6. Specify typography details (font families, sizes, and placements) to enhance readability.
+7. Describe composition techniques (use of negative space, alignment, and balance).
+8. Recommend incorporating consistent branding elements (brand colors and logos) if applicable.
 
-Create a highly actionable, SINGLE COHESIVE PARAGRAPH guideline for designing an optimal thumbnail. The guideline must:
-- Describe specific colors (with hex codes if possible)
-- Detail layout and composition (including typography, spatial arrangement, and balance)
-- Explain emotional triggers and branding elements
-- Include every element so that a designer can create the thumbnail exactly from your description.
+Your output must be highly actionable so that a designer can create the thumbnail exactly from your description.
 """
-        variants = [
-            "Bold and dynamic design with strong typography and vibrant, contrasting colors.",
-            "Minimalist and clean design with subtle details, ample white space, and modern fonts.",
-            "Modern and edgy design with innovative layout, striking gradients, and a mix of bold and soft elements.",
-            "Creative and artistic design that blends traditional elements with contemporary flair, emphasizing balance and visual harmony."
-        ]
-        prompts = []
-        for idx, style in enumerate(variants):
-            variant_prompt = f"Variation {idx+1}: {base_context}\nStyle Instruction: {style}\nCreate a thumbnail design guideline which describes everything needed to produce a thumbnail that encapsulates the video input."
-            response = client.ChatCompletion.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are a top-tier YouTube thumbnail designer with deep expertise in creating high CTR thumbnails."},
-                    {"role": "user", "content": variant_prompt}
-                ],
-                max_tokens=1000
-            )
-            prompts.append(response.choices[0].message.content)
-        combined_prompts = "\n\n" + ("-"*80 + "\n\n").join(prompts)
-        return combined_prompts
+        response = client.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a YouTube thumbnail expert with deep knowledge of what drives high click-through rates."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Error generating optimal prompts: {e}")
+        st.error(f"Error generating optimal prompt: {e}")
         return None
 
-#######################
-# Main App
-#######################
-
+# Main app
 def main():
     st.title("YouTube Thumbnail Analyzer")
     st.write("Find successful videos, analyze their thumbnails, and generate optimal thumbnail designs.")
     
+    # Initialize API clients silently
     vision_client, openai_client, youtube_api_key = setup_credentials()
-    conn = init_db()
-    
     if not openai_client:
         st.error("OpenAI client not initialized. Please check your API key.")
         return
 
+    # Option to choose between Title and Intro for input
     input_type = st.selectbox("Select Input Type", ["Title", "Intro"])
     user_text = st.text_area(f"Enter your video {input_type.lower()}:", height=100)
+
+    # New Region filter
     region_filter = st.selectbox("Select Region", ["Global", "USA", "India"])
-    
+
+    # Search configuration
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         video_type = st.selectbox("Content Type", ["All", "Regular Videos", "Shorts"])
@@ -576,10 +534,7 @@ def main():
         max_results = st.number_input("Number of Results", min_value=1, max_value=10, value=5)
     with col4:
         sort_by = st.selectbox("Sort Results By", ["Views", "Outlier Score"])
-    
-    session_key = create_session_key(user_text, input_type, region_filter, video_type, timeframe, max_results, sort_by)
-    cached = get_cached_session(conn, session_key)
-    
+
     if youtube_api_key:
         search_button = st.button("Search YouTube")
     else:
@@ -587,52 +542,47 @@ def main():
         search_button = False
 
     if search_button and user_text:
-        if cached:
-            st.info("Loaded cached optimal prompts.")
-            optimal_prompts = cached
-        else:
-            with st.spinner("Searching YouTube and analyzing thumbnails..."):
-                videos = search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client, region_filter)
-                if not videos:
-                    st.warning("No videos found matching your criteria. Try a different search.")
-                    return
+        with st.spinner("Searching YouTube and analyzing thumbnails..."):
+            videos = search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client, region_filter)
+            if not videos:
+                st.warning("No videos found matching your criteria. Try a different search.")
+            else:
                 if sort_by == "Views":
-                    videos.sort(key=lambda v: v['views'] * (v['match_score']+1), reverse=True)
+                    videos.sort(key=lambda x: x['views'], reverse=True)
                 else:
-                    videos.sort(key=lambda v: v['outlier_score'] * (v['match_score']+1), reverse=True)
+                    videos.sort(key=lambda x: x['outlier_score'], reverse=True)
                 thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
-                optimal_prompts = generate_optimal_prompts(openai_client, thumbnail_analyses, user_text)
-                cache_session(conn, session_key, optimal_prompts)
-        results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
-        with results_tab:
-            st.subheader(f"Found {len(videos)} Videos")
-            for i, analysis in enumerate(thumbnail_analyses):
-                video = analysis['video']
-                st.markdown(f"### {i+1}. {video['title']}")
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.image(analysis['thumbnail_image'], caption="Thumbnail", use_column_width=True)
-                    st.markdown(f"**Channel:** {video['channel']}")
-                    st.markdown(f"**Views:** {video['views']:,}")
-                    st.markdown(f"**Outlier Score:** {video['outlier_score']:.2f}x")
-                    st.markdown(f"**Published:** {video['published_at'][:10]}")
-                    st.markdown(f"**Type:** {'Short' if video['is_short'] else 'Regular Video'}")
-                with col2:
-                    st.markdown("**Thumbnail Analysis:**")
-                    st.markdown(analysis['prompt'])
-                    st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
-                st.divider()
-        with optimal_tab:
-            st.subheader("Optimal Thumbnail Design Variations")
-            with st.spinner("Generating optimal thumbnail design variations..."):
-                st.markdown("### Based on analysis of all thumbnails:")
-                st.text_area("Copy these optimal prompt variations:", value=optimal_prompts, height=400)
-                st.download_button(
-                    label="Download Optimal Prompts",
-                    data=optimal_prompts,
-                    file_name="optimal_thumbnail_prompts.txt",
-                    mime="text/plain"
-                )
+                st.subheader(f"Found {len(videos)} Videos")
+                results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
+                with results_tab:
+                    for i, analysis in enumerate(thumbnail_analyses):
+                        video = analysis['video']
+                        st.markdown(f"### {i+1}. {video['title']}")
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            st.image(analysis['thumbnail_image'], caption="Thumbnail", use_column_width=True)
+                            st.markdown(f"**Channel:** {video['channel']}")
+                            st.markdown(f"**Views:** {video['views']:,}")
+                            st.markdown(f"**Outlier Score:** {video['outlier_score']:.2f}x")
+                            st.markdown(f"**Published:** {video['published_at'][:10]}")
+                            st.markdown(f"**Type:** {'Short' if video['is_short'] else 'Regular Video'}")
+                        with col2:
+                            st.markdown("**Thumbnail Analysis:**")
+                            st.markdown(analysis['prompt'])
+                            st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
+                        st.divider()
+                with optimal_tab:
+                    st.subheader("Optimal Thumbnail Design")
+                    with st.spinner("Generating optimal thumbnail design..."):
+                        optimal_prompt = generate_optimal_prompt(openai_client, thumbnail_analyses, user_text)
+                        st.markdown("### Based on analysis of all thumbnails:")
+                        st.text_area("Copy this optimal prompt:", value=optimal_prompt, height=300)
+                        st.download_button(
+                            label="Download Optimal Prompt",
+                            data=optimal_prompt,
+                            file_name="optimal_thumbnail_prompt.txt",
+                            mime="text/plain"
+                        )
 
 if __name__ == "__main__":
     main()
