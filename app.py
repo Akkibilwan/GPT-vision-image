@@ -11,8 +11,6 @@ import base64
 import time
 from datetime import datetime, timedelta
 import pandas as pd
-from googleapiclient.discovery import build
-from urllib.parse import urlparse, parse_qs
 import re
 
 # Set page configuration
@@ -280,21 +278,20 @@ def is_youtube_short(duration_str):
     # YouTube Shorts are typically <= 60 seconds
     return total_seconds <= 60
 
-# Function to search YouTube videos
+# Function to search YouTube videos using requests
 def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, timeframe):
     try:
-        youtube = build('youtube', 'v3', developerKey=youtube_api_key)
-        
         # Get date range based on timeframe
         published_after = get_date_range(timeframe)
         
-        # Prepare search parameters
+        # Prepare search parameters for YouTube Data API
         search_params = {
             'q': intro_text,
             'part': 'snippet',
-            'maxResults': min(max_results, 50),  # API limit is 50
+            'maxResults': min(max_results * 2, 50),  # Get more to filter later
             'type': 'video',
-            'order': 'viewCount'  # Sort by view count
+            'order': 'viewCount',  # Sort by view count
+            'key': youtube_api_key
         }
         
         # Add published date filter if not lifetime
@@ -302,28 +299,53 @@ def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, 
             search_params['publishedAfter'] = published_after
         
         # Execute search
-        search_response = youtube.search().list(**search_params).execute()
+        search_url = "https://www.googleapis.com/youtube/v3/search"
+        search_response = requests.get(search_url, params=search_params)
+        search_data = search_response.json()
+        
+        if 'error' in search_data:
+            st.error(f"YouTube API error: {search_data['error']['message']}")
+            return []
+        
+        if 'items' not in search_data or not search_data['items']:
+            st.warning("No videos found matching your search criteria.")
+            return []
         
         # Get video details including statistics and content details
-        video_ids = [item['id']['videoId'] for item in search_response['items']]
+        video_ids = [item['id']['videoId'] for item in search_data['items']]
         
         if not video_ids:
             return []
         
-        video_response = youtube.videos().list(
-            part='snippet,statistics,contentDetails',
-            id=','.join(video_ids)
-        ).execute()
+        # Get video details
+        videos_url = "https://www.googleapis.com/youtube/v3/videos"
+        videos_params = {
+            'part': 'snippet,statistics,contentDetails',
+            'id': ','.join(video_ids),
+            'key': youtube_api_key
+        }
+        
+        videos_response = requests.get(videos_url, params=videos_params)
+        videos_data = videos_response.json()
         
         videos = []
-        for item in video_response['items']:
+        for item in videos_data.get('items', []):
+            # Extract duration
+            duration = item['contentDetails']['duration']
+            
             # Check if this is a Short
-            is_short = is_youtube_short(item['contentDetails']['duration'])
+            is_short = is_youtube_short(duration)
             
             # Filter based on video type
             if video_type == "All" or \
                (video_type == "Regular Videos" and not is_short) or \
                (video_type == "Shorts" and is_short):
+                
+                # Extract statistics (handle missing keys)
+                statistics = item.get('statistics', {})
+                view_count = int(statistics.get('viewCount', 0))
+                like_count = int(statistics.get('likeCount', 0)) if 'likeCount' in statistics else 0
+                comment_count = int(statistics.get('commentCount', 0)) if 'commentCount' in statistics else 0
                 
                 # Extract data
                 video_data = {
@@ -331,27 +353,28 @@ def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, 
                     'title': item['snippet']['title'],
                     'channel': item['snippet']['channelTitle'],
                     'channel_id': item['snippet']['channelId'],
-                    'views': int(item['statistics'].get('viewCount', 0)),
-                    'likes': int(item['statistics'].get('likeCount', 0)) if 'likeCount' in item['statistics'] else 0,
-                    'comments': int(item['statistics'].get('commentCount', 0)) if 'commentCount' in item['statistics'] else 0,
+                    'views': view_count,
+                    'likes': like_count,
+                    'comments': comment_count,
                     'published_at': item['snippet']['publishedAt'],
                     'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
                     'is_short': is_short,
-                    'duration': item['contentDetails']['duration']
+                    'duration': duration
                 }
                 videos.append(video_data)
         
         # Calculate outlier scores
-        videos = calculate_outlier_scores(youtube, videos)
+        videos = calculate_outlier_scores(youtube_api_key, videos)
         
-        return videos
+        # Limit to requested number
+        return videos[:max_results]
         
     except Exception as e:
         st.error(f"Error searching YouTube videos: {e}")
         return []
 
-# Function to calculate outlier scores
-def calculate_outlier_scores(youtube, videos):
+# Function to calculate outlier scores using requests
+def calculate_outlier_scores(youtube_api_key, videos):
     try:
         # Group videos by channel
         channels = {}
@@ -369,25 +392,35 @@ def calculate_outlier_scores(youtube, videos):
         for channel_id, data in channels.items():
             # Get channel data (more videos if needed)
             try:
-                channel_response = youtube.channels().list(
-                    part='statistics',
-                    id=channel_id
-                ).execute()
+                # Get channel info
+                channel_url = "https://www.googleapis.com/youtube/v3/channels"
+                channel_params = {
+                    'part': 'statistics',
+                    'id': channel_id,
+                    'key': youtube_api_key
+                }
                 
-                channel_stats = channel_response['items'][0]['statistics']
-                total_videos = int(channel_stats.get('videoCount', 0))
-                total_views = int(channel_stats.get('viewCount', 0))
+                channel_response = requests.get(channel_url, params=channel_params)
+                channel_data = channel_response.json()
                 
-                # Approximate average views
-                avg_views = total_views / total_videos if total_videos > 0 else 0
-                
-                # Set avg_views for both video types
-                channels[channel_id]['avg_views'] = avg_views
+                if 'items' in channel_data and channel_data['items']:
+                    channel_stats = channel_data['items'][0]['statistics']
+                    total_videos = int(channel_stats.get('videoCount', 0))
+                    total_views = int(channel_stats.get('viewCount', 0))
+                    
+                    # Approximate average views
+                    avg_views = total_views / total_videos if total_videos > 0 else 0
+                    
+                    # Set avg_views for the channel
+                    channels[channel_id]['avg_views'] = avg_views
+                else:
+                    # If can't get channel stats, use average of current videos
+                    regular_avg = sum(v['views'] for v in data['regular']) / len(data['regular']) if data['regular'] else 0
+                    channels[channel_id]['avg_views'] = regular_avg
             except Exception as e:
-                # If can't get channel stats, use average of current videos
+                # If API call fails, estimate from what we have
+                st.warning(f"Could not get channel stats for {channel_id}. Using estimated values.")
                 regular_avg = sum(v['views'] for v in data['regular']) / len(data['regular']) if data['regular'] else 0
-                shorts_avg = sum(v['views'] for v in data['shorts']) / len(data['shorts']) if data['shorts'] else 0
-                
                 channels[channel_id]['avg_views'] = regular_avg
         
         # Calculate outlier scores
