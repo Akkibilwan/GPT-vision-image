@@ -69,9 +69,7 @@ def setup_credentials():
                     st.warning("Please enter an OpenAI API key to continue.")
         
         if api_key:
-            # Initialize the OpenAI client by simply setting the api_key attribute
-            openai.api_key = api_key
-            openai_client = openai
+            openai_client = openai.OpenAI(api_key=api_key)
     except Exception as e:
         st.error(f"Error setting up OpenAI API: {e}")
     
@@ -138,12 +136,12 @@ def encode_image(image_bytes):
 # Function to analyze image with OpenAI
 def analyze_with_openai(client, base64_image):
     try:
-        response = client.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
                     "role": "user",
-                    "content": json.dumps([
+                    "content": [
                         {"type": "text", "text": "Analyze this YouTube thumbnail. Describe what you see in detail."},
                         {
                             "type": "image_url",
@@ -151,7 +149,7 @@ def analyze_with_openai(client, base64_image):
                                 "url": f"data:image/jpeg;base64,{base64_image}"
                             }
                         }
-                    ])
+                    ]
                 }
             ],
             max_tokens=500
@@ -187,7 +185,7 @@ def generate_prompt_paragraph(client, vision_results, openai_description):
         Analysis data:
         """
         
-        response = client.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a thumbnail description expert who creates detailed, specific paragraph descriptions."},
@@ -204,7 +202,7 @@ def generate_prompt_paragraph(client, vision_results, openai_description):
 # Function to extract keywords from intro text
 def extract_keywords(client, intro_text):
     try:
-        response = client.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a keyword extraction specialist."},
@@ -224,15 +222,6 @@ def extract_keywords(client, intro_text):
     except Exception as e:
         st.error(f"Error extracting keywords: {e}")
         return intro_text
-
-# Helper function to compute keyword overlap
-def compute_keyword_overlap(input_keywords_str, source_text):
-    # Convert the comma-separated input keywords into a set
-    input_keywords_set = set(kw.strip().lower() for kw in input_keywords_str.split(',') if kw.strip())
-    # Extract words from the source text (simple word split; can be enhanced)
-    source_words = set(re.findall(r'\b\w+\b', source_text.lower()))
-    overlap = input_keywords_set.intersection(source_words)
-    return len(overlap), list(overlap)
 
 # Function to get date range based on timeframe
 def get_date_range(timeframe):
@@ -289,9 +278,9 @@ def search_youtube_videos(youtube_api_key, intro_text, video_type, max_results, 
             'part': 'snippet',
             'maxResults': min(max_results * 2, 50),  # Get more to filter later
             'type': 'video',
-            'order': 'relevance',  # Using relevance for better matching
+            'order': 'relevance',  # Changed to relevance for better semantic matching
             'key': youtube_api_key,
-            'relevanceLanguage': 'en'
+            'relevanceLanguage': 'en'  # Focus on English content for better matching
         }
         
         # Add published date filter if not lifetime
@@ -391,6 +380,7 @@ def calculate_outlier_scores(youtube_api_key, videos):
         
         # Calculate avg views per channel
         for channel_id, data in channels.items():
+            # Get channel data (more videos if needed)
             try:
                 # Get channel info
                 channel_url = "https://www.googleapis.com/youtube/v3/channels"
@@ -408,31 +398,40 @@ def calculate_outlier_scores(youtube_api_key, videos):
                     total_videos = int(channel_stats.get('videoCount', 0))
                     total_views = int(channel_stats.get('viewCount', 0))
                     
-                    # Estimate averages for shorts and regular videos (approximation)
+                    # Calculate separate averages for shorts and regular videos
+                    # We'll approximate using the global ratio: 80% of channel views are regular, 20% are shorts
+                    # This is a rough estimate and would vary by channel
+                    
                     if 'shorts' in data and 'regular' in data:
                         if len(data['shorts']) > 0 and len(data['regular']) > 0:
+                            # If we have both shorts and regular videos, try to estimate per type
                             avg_views_shorts = (total_views * 0.2) / (total_videos * 0.3) if total_videos > 0 else 0
                             avg_views_regular = (total_views * 0.8) / (total_videos * 0.7) if total_videos > 0 else 0
                             
+                            # Add these to the channel data
                             channels[channel_id]['avg_views_shorts'] = avg_views_shorts
                             channels[channel_id]['avg_views_regular'] = avg_views_regular
                         else:
+                            # If we only have one type, just use the overall average
                             avg_views = total_views / total_videos if total_videos > 0 else 0
                             channels[channel_id]['avg_views_shorts'] = avg_views
                             channels[channel_id]['avg_views_regular'] = avg_views
                     else:
+                        # Fallback to overall average
                         avg_views = total_views / total_videos if total_videos > 0 else 0
                         channels[channel_id]['avg_views_shorts'] = avg_views
                         channels[channel_id]['avg_views_regular'] = avg_views
                 else:
+                    # If can't get channel stats, use current videos as sample
                     shorts_avg = sum(v['views'] for v in data.get('shorts', [])) / len(data['shorts']) if data.get('shorts', []) else 0
-                    regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data.get('regular', [])) if data.get('regular', []) else 0
+                    regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data['regular']) if data.get('regular', []) else 0
                     
                     channels[channel_id]['avg_views_shorts'] = shorts_avg if shorts_avg > 0 else 1
                     channels[channel_id]['avg_views_regular'] = regular_avg if regular_avg > 0 else 1
             except Exception as e:
+                # If API call fails, estimate from what we have
                 shorts_avg = sum(v['views'] for v in data.get('shorts', [])) / len(data['shorts']) if data.get('shorts', []) else 0
-                regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data.get('regular', [])) if data.get('regular', []) else 0
+                regular_avg = sum(v['views'] for v in data.get('regular', [])) / len(data['regular']) if data.get('regular', []) else 0
                 
                 channels[channel_id]['avg_views_shorts'] = shorts_avg if shorts_avg > 0 else 1
                 channels[channel_id]['avg_views_regular'] = regular_avg if regular_avg > 0 else 1
@@ -455,6 +454,7 @@ def calculate_outlier_scores(youtube_api_key, videos):
         
     except Exception as e:
         st.error(f"Error calculating outlier scores: {e}")
+        # Return videos without outlier scores
         for video in videos:
             video['outlier_score'] = 1.0
         return videos
@@ -484,11 +484,13 @@ def analyze_thumbnails(videos, vision_client, openai_client):
             openai_description = analyze_with_openai(openai_client, base64_image)
             
             # Generate prompt paragraph
+            prompt = None
             if vision_results:
                 prompt = generate_prompt_paragraph(openai_client, vision_results, openai_description)
             else:
                 prompt = generate_prompt_paragraph(openai_client, {"no_vision_api": True}, openai_description)
             
+            # Add results
             results.append({
                 'video': video,
                 'vision_results': vision_results,
@@ -502,111 +504,49 @@ def analyze_thumbnails(videos, vision_client, openai_client):
     
     return results
 
-# Modified function to generate optimal thumbnail prompt with keyword overlap analysis
+# Function to generate optimal thumbnail prompt based on multiple analyses
 def generate_optimal_prompt(client, thumbnail_analyses, intro_text):
     try:
-        # First, extract keywords from the input intro
-        input_keywords = extract_keywords(client, intro_text)
-        
+        # Extract prompts, video stats, and descriptions
         analysis_data = []
         for analysis in thumbnail_analyses:
-            # Extract detailed color information from Vision API
-            colors_info = []
-            if analysis['vision_results'] and 'colors' in analysis['vision_results']:
-                for color in analysis['vision_results']['colors']:
-                    r = color['color']['red']
-                    g = color['color']['green']
-                    b = color['color']['blue']
-                    hex_color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
-                    colors_info.append({
-                        "hex": hex_color,
-                        "score": color['score'],
-                        "pixel_fraction": color['pixel_fraction']
-                    })
-            
-            # Extract text from Vision API
-            detected_text = ""
-            if analysis['vision_results'] and 'text' in analysis['vision_results'] and analysis['vision_results']['text']:
-                detected_text = analysis['vision_results']['text'][0].get('description', '')
-            
-            # Extract features detected by Vision API
-            detected_labels = []
-            if analysis['vision_results'] and 'labels' in analysis['vision_results']:
-                detected_labels = [
-                    {"label": label['description'], "score": label['score']} 
-                    for label in analysis['vision_results']['labels'][:10]
-                ]
-            
-            # Compute keyword overlap for video title + description
-            title_desc_text = analysis['video']['title'] + " " + analysis['video']['description']
-            title_overlap_count, title_overlap_list = compute_keyword_overlap(input_keywords, title_desc_text)
-            
-            # Also compare with text detected from the thumbnail (if available)
-            thumbnail_overlap_count, thumbnail_overlap_list = compute_keyword_overlap(input_keywords, detected_text)
-            
             analysis_data.append({
-                'video_title': analysis['video']['title'],
-                'video_description': analysis['video']['description'][:200],
+                'prompt': analysis['prompt'],
                 'views': analysis['video']['views'],
                 'outlier_score': analysis['video']['outlier_score'],
                 'is_short': analysis['video']['is_short'],
-                'channel': analysis['video']['channel'],
-                'prompt': analysis['prompt'],
-                'colors': colors_info,
-                'detected_text': detected_text,
-                'detected_labels': detected_labels,
-                'faces': analysis['vision_results'].get('faces', []),
-                'openai_description': analysis['openai_description'][:300],
-                'title_keyword_overlap': title_overlap_count,
-                'title_keyword_overlap_list': title_overlap_list,
-                'thumbnail_text_overlap': thumbnail_overlap_count,
-                'thumbnail_text_overlap_list': thumbnail_overlap_list,
+                'title': analysis['video']['title'],
+                'description': analysis['video']['description'][:300] if len(analysis['video']['description']) > 300 else analysis['video']['description']
             })
         
-        # Sort by outlier score (or you can sort by keyword overlap if desired)
-        sorted_data = sorted(analysis_data, key=lambda x: x['outlier_score'], reverse=True)
-        
         prompt = f"""
-As a YouTube thumbnail expert, I need you to design the PERFECT thumbnail for a new video based on analysis of successful videos in the same niche.
-
-My video intro/description is: "{intro_text}"
-
-The extracted keywords from my intro are: "{input_keywords}"
-
-I've analyzed {len(sorted_data)} successful YouTube thumbnails in this niche. Here is the detailed data for each video including keyword overlaps:
-
-{json.dumps(sorted_data, indent=2)}
-
-Based on this data, create a HIGHLY SPECIFIC thumbnail design guide that will maximize CTR. Your response must include:
-
-1. THUMBNAIL DESIGN CONCEPT:
-   - Create an extremely specific, concrete design (not generic or abstract)
-   - Specify exact colors using hex codes from the analyzed thumbnails
-   - Describe specific visual elements that should be included
-   - Detail exact text to include (words, style, placement, font)
-   - Explain realistic composition and layout
-
-2. CTR ANALYSIS:
-   - Explain exactly why this thumbnail design will generate high CTR
-   - Identify patterns from high-performing thumbnails (e.g. those with high outlier scores and high keyword overlaps)
-   - Note how specific design elements contribute to clicks
-
-3. TECHNICAL SPECIFICATIONS:
-   - Colors: Exact hex codes for background, text, and elements
-   - Text: Specific words, font style, size relative to image
-   - Composition: Precise layout with clear focal points
-   - Style: Special effects, filters, borders or graphic elements
-
-Your output must be HIGHLY ACTIONABLE - a designer should be able to create exactly what you describe without guesswork. Be concrete and specific about every element.
-"""
+        You are a YouTube thumbnail expert. I need you to analyze multiple successful thumbnails and generate ONE optimal thumbnail design guideline.
         
-        response = client.ChatCompletion.create(
+        Here's the intro/description of the video I want to create: "{intro_text}"
+        
+        Below are analyses of {len(analysis_data)} successful YouTube thumbnails in this niche, along with their view counts and outlier scores:
+        
+        {json.dumps(analysis_data, indent=2)}
+        
+        Based on these analyses and the video intro I provided, create a SINGLE COHESIVE PARAGRAPH that describes the optimal thumbnail design for my video.
+        
+        Your paragraph should:
+        1. Identify common patterns among the most successful thumbnails (highest views and outlier scores)
+        2. Suggest specific colors, layout, text, and visual elements 
+        3. Describe how these elements should be arranged
+        4. Explain how the thumbnail should capture the essence of my video intro
+        5. Include emotional triggers that will maximize click-through rates
+        
+        Make this paragraph comprehensive and specific enough that a designer could create the thumbnail from your description.
+        """
+        
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a top-tier YouTube thumbnail designer who creates thumbnails that consistently achieve high CTR. You analyze data to create actionable, high-converting designs."},
+                {"role": "system", "content": "You are a YouTube thumbnail expert with deep knowledge of what drives high click-through rates."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1500
+            max_tokens=1000
         )
         
         return response.choices[0].message.content
@@ -684,6 +624,7 @@ def main():
                 results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
                 
                 with results_tab:
+                    # Create columns for videos
                     for i, analysis in enumerate(thumbnail_analyses):
                         video = analysis['video']
                         
@@ -692,7 +633,9 @@ def main():
                         col1, col2 = st.columns([1, 2])
                         
                         with col1:
-                            st.image(analysis['thumbnail_image'], caption="Thumbnail", use_column_width=True)
+                            st.image(analysis['thumbnail_image'], caption=f"Thumbnail", use_column_width=True)
+                            
+                            # Video stats
                             st.markdown(f"**Channel:** {video['channel']}")
                             st.markdown(f"**Views:** {video['views']:,}")
                             st.markdown(f"**Outlier Score:** {video['outlier_score']:.2f}x")
@@ -700,19 +643,25 @@ def main():
                             st.markdown(f"**Type:** {'Short' if video['is_short'] else 'Regular Video'}")
                         
                         with col2:
+                            # Thumbnail prompt
                             st.markdown("**Thumbnail Analysis:**")
                             st.markdown(analysis['prompt'])
+                            
+                            # Link to video
                             st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
                         
                         st.divider()
                 
                 with optimal_tab:
+                    # Generate optimal thumbnail prompt
                     st.subheader("Optimal Thumbnail Design")
                     with st.spinner("Generating optimal thumbnail design..."):
                         optimal_prompt = generate_optimal_prompt(openai_client, thumbnail_analyses, intro_text)
                         
                         st.markdown("### Based on analysis of all thumbnails:")
                         st.text_area("Copy this optimal prompt:", value=optimal_prompt, height=300)
+                        
+                        # Add a download button for the optimal prompt
                         st.download_button(
                             label="Download Optimal Prompt",
                             data=optimal_prompt,
@@ -722,3 +671,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
