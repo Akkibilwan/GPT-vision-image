@@ -507,100 +507,46 @@ def analyze_thumbnails(videos, vision_client, openai_client):
 # Function to generate optimal thumbnail prompt based on multiple analyses
 def generate_optimal_prompt(client, thumbnail_analyses, intro_text):
     try:
-        # Extract comprehensive data for all videos
+        # Extract prompts, video stats, and descriptions
         analysis_data = []
         for analysis in thumbnail_analyses:
-            # Extract detailed color information from Vision API
-            colors_info = []
-            if analysis['vision_results'] and 'colors' in analysis['vision_results']:
-                for color in analysis['vision_results']['colors']:
-                    r = color['color']['red']
-                    g = color['color']['green']
-                    b = color['color']['blue']
-                    hex_color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
-                    colors_info.append({
-                        "hex": hex_color,
-                        "score": color['score'],
-                        "pixel_fraction": color['pixel_fraction']
-                    })
-            
-            # Extract text from Vision API
-            detected_text = ""
-            if analysis['vision_results'] and 'text' in analysis['vision_results'] and analysis['vision_results']['text']:
-                detected_text = analysis['vision_results']['text'][0].get('description', '')
-            
-            # Extract features detected by Vision API
-            detected_labels = []
-            if analysis['vision_results'] and 'labels' in analysis['vision_results']:
-                detected_labels = [
-                    {"label": label['description'], "score": label['score']} 
-                    for label in analysis['vision_results']['labels'][:10]  # Top 10 labels
-                ]
-            
-            # Extract faces if any
-            faces_info = []
-            if analysis['vision_results'] and 'faces' in analysis['vision_results']:
-                faces_info = analysis['vision_results']['faces']
-            
             analysis_data.append({
-                'video_title': analysis['video']['title'],
-                'video_description': analysis['video']['description'][:200],  # Truncate to first 200 chars
+                'prompt': analysis['prompt'],
                 'views': analysis['video']['views'],
                 'outlier_score': analysis['video']['outlier_score'],
                 'is_short': analysis['video']['is_short'],
-                'channel': analysis['video']['channel'],
-                'prompt': analysis['prompt'],
-                'colors': colors_info,
-                'detected_text': detected_text,
-                'detected_labels': detected_labels,
-                'faces': faces_info,
-                'openai_description': analysis['openai_description'][:300]  # Truncate description
+                'title': analysis['video']['title'],
+                'description': analysis['video']['description'][:300] if len(analysis['video']['description']) > 300 else analysis['video']['description']
             })
         
-        # Sort by outlier score to prioritize best-performing thumbnails
-        sorted_data = sorted(analysis_data, key=lambda x: x['outlier_score'], reverse=True)
-        
         prompt = f"""
-        As a YouTube thumbnail expert, I need you to design the PERFECT thumbnail for a new video based on analysis of successful videos in the same niche.
+        You are a YouTube thumbnail expert. I need you to analyze multiple successful thumbnails and generate ONE optimal thumbnail design guideline.
         
-        My video intro/description is: "{intro_text}"
+        Here's the intro/description of the video I want to create: "{intro_text}"
         
-        I've analyzed {len(sorted_data)} successful YouTube thumbnails in this niche. Here's the detailed data:
+        Below are analyses of {len(analysis_data)} successful YouTube thumbnails in this niche, along with their view counts and outlier scores:
         
-        {json.dumps(sorted_data, indent=2)}
+        {json.dumps(analysis_data, indent=2)}
         
-        Based on this data, create a HIGHLY SPECIFIC thumbnail design guide that will maximize CTR. Your response must include:
-
-        1. THUMBNAIL DESIGN CONCEPT:
-           - Create an extremely specific, concrete design (not generic or abstract)
-           - Specify exact colors using hex codes from the analyzed thumbnails
-           - Describe specific visual elements that should be included
-           - Detail exact text to include (words, style, placement, font)
-           - Explain realistic composition and layout
+        Based on these analyses and the video intro I provided, create a SINGLE COHESIVE PARAGRAPH that describes the optimal thumbnail design for my video.
         
-        2. CTR ANALYSIS:
-           - Explain exactly why this thumbnail design will generate high CTR
-           - Identify patterns from high-performing thumbnails (outlier scores > 1.5x)
-           - Note how specific design elements contribute to clicks
+        Your paragraph should:
+        1. Identify common patterns among the most successful thumbnails (highest views and outlier scores)
+        2. Suggest specific colors, layout, text, and visual elements 
+        3. Describe how these elements should be arranged
+        4. Explain how the thumbnail should capture the essence of my video intro
+        5. Include emotional triggers that will maximize click-through rates
         
-        3. TECHNICAL SPECIFICATIONS:
-           - Colors: Exact hex codes for background, text, and elements
-           - Text: Specific words, font style, size relative to image
-           - Composition: Precise layout with clear focal points
-           - Style: Special effects, filters, borders or graphic elements
-        
-        Your output must be HIGHLY ACTIONABLE - a designer should be able to create exactly what you describe without guesswork. Be concrete and specific about every element.
-        
-        DO NOT give generic advice. DO specify exact colors, words, and visual elements.
+        Make this paragraph comprehensive and specific enough that a designer could create the thumbnail from your description.
         """
         
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a top-tier YouTube thumbnail designer who creates thumbnails that consistently achieve 15-20% CTR in any niche. You analyze data to create actionable, high-converting designs."},
+                {"role": "system", "content": "You are a YouTube thumbnail expert with deep knowledge of what drives high click-through rates."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1500
+            max_tokens=1000
         )
         
         return response.choices[0].message.content
