@@ -1,6 +1,6 @@
-streamlit
-requests
-pillow
-google-cloud-vision
-google-auth
-openai
+streamlit>=1.0.0
+requests>=2.25.1
+Pillow>=8.0.0
+google-cloud-vision>=2.0.0
+google-auth>=2.0.0
+openai==0.27.0
