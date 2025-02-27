@@ -10,7 +10,6 @@ import openai
 import base64
 import time
 from datetime import datetime, timedelta
-import pandas as pd
 import re
 
 # Set page configuration
@@ -419,7 +418,6 @@ def calculate_outlier_scores(youtube_api_key, videos):
                     channels[channel_id]['avg_views'] = regular_avg
             except Exception as e:
                 # If API call fails, estimate from what we have
-                st.warning(f"Could not get channel stats for {channel_id}. Using estimated values.")
                 regular_avg = sum(v['views'] for v in data['regular']) / len(data['regular']) if data['regular'] else 0
                 channels[channel_id]['avg_views'] = regular_avg
         
