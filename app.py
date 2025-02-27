@@ -19,13 +19,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Function to setup API credentials (status messages removed)
+# Function to setup API credentials (API status messages removed)
 def setup_credentials():
     vision_client = None
     openai_client = None
     youtube_api_key = None
-    
-    # For Google Vision API
+
+    # Google Vision API
     try:
         if 'GOOGLE_CREDENTIALS' in st.secrets:
             credentials_dict = st.secrets["GOOGLE_CREDENTIALS"]
@@ -45,8 +45,8 @@ def setup_credentials():
                     st.error("Google Vision API credentials not found.")
     except Exception as e:
         st.error(f"Error loading Google Vision API credentials: {e}")
-    
-    # For OpenAI API
+
+    # OpenAI API
     try:
         api_key = None
         if 'OPENAI_API_KEY' in st.secrets:
@@ -62,8 +62,8 @@ def setup_credentials():
             openai_client = openai
     except Exception as e:
         st.error(f"Error setting up OpenAI API: {e}")
-    
-    # For YouTube API
+
+    # YouTube API
     try:
         if 'YOUTUBE_API_KEY' in st.secrets:
             youtube_api_key = st.secrets["YOUTUBE_API_KEY"]
@@ -75,7 +75,7 @@ def setup_credentials():
                     st.warning("Please enter a YouTube API key to continue.")
     except Exception as e:
         st.error(f"Error setting up YouTube API: {e}")
-    
+
     return vision_client, openai_client, youtube_api_key
 
 # Function to analyze image with Google Vision API
@@ -87,26 +87,24 @@ def analyze_with_vision(image_bytes, vision_client):
         face_detection = vision_client.face_detection(image=image)
         logo_detection = vision_client.logo_detection(image=image)
         image_properties = vision_client.image_properties(image=image)
-        
         results = {
-            "labels": [{"description": label.description, "score": float(label.score)} 
-                      for label in label_detection.label_annotations],
+            "labels": [{"description": label.description, "score": float(label.score)}
+                       for label in label_detection.label_annotations],
             "text": [{"description": text.description, "confidence": float(text.confidence) if hasattr(text, 'confidence') else None}
                      for text in text_detection.text_annotations[:1]],
-            "faces": [{"joy": face.joy_likelihood.name, 
+            "faces": [{"joy": face.joy_likelihood.name,
                        "sorrow": face.sorrow_likelihood.name,
                        "anger": face.anger_likelihood.name,
                        "surprise": face.surprise_likelihood.name}
                       for face in face_detection.face_annotations],
             "logos": [{"description": logo.description} for logo in logo_detection.logo_annotations],
-            "colors": [{"color": {"red": color.color.red, 
-                                  "green": color.color.green, 
+            "colors": [{"color": {"red": color.color.red,
+                                  "green": color.color.green,
                                   "blue": color.color.blue},
                         "score": float(color.score),
                         "pixel_fraction": float(color.pixel_fraction)}
                        for color in image_properties.image_properties_annotation.dominant_colors.colors[:5]]
         }
-        
         return results
     except Exception as e:
         st.error(f"Error analyzing image with Google Vision API: {e}")
@@ -116,7 +114,7 @@ def analyze_with_vision(image_bytes, vision_client):
 def encode_image(image_bytes):
     return base64.b64encode(image_bytes).decode('utf-8')
 
-# Function to analyze image with OpenAI
+# Function to analyze image with OpenAI using the new interface
 def analyze_with_openai(client, base64_image):
     try:
         response = client.ChatCompletion.create(
@@ -149,7 +147,6 @@ def generate_prompt_paragraph(client, vision_results, openai_description):
             "vision_analysis": vision_results,
             "openai_description": openai_description
         }
-        
         prompt = """
 Based on the provided thumbnail analyses from Google Vision AI and your own image reading, create a SINGLE COHESIVE PARAGRAPH that very specifically defines the thumbnail.
 
@@ -166,7 +163,6 @@ DO NOT use bullet points or separate sections - this must be a flowing, cohesive
 
 Analysis data:
 """
-        
         response = client.ChatCompletion.create(
             model="gpt-4o",
             messages=[
@@ -180,7 +176,7 @@ Analysis data:
         st.error(f"Error generating prompt paragraph: {e}")
         return None
 
-# Function to extract keywords from input text based on its type
+# Function to extract keywords from input text based on type (Title or Intro)
 def extract_keywords(client, user_text, input_type):
     try:
         if input_type == "Title":
@@ -243,7 +239,6 @@ def is_youtube_short(duration_str):
         total_seconds += int(minutes.group(1)) * 60
     if seconds:
         total_seconds += int(seconds.group(1))
-    # Consider as short if duration is less than 3 minutes (180 seconds)
     return total_seconds < 180
 
 # Function to search YouTube videos using requests
@@ -287,9 +282,7 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
         for item in videos_data.get('items', []):
             duration = item['contentDetails']['duration']
             is_short = is_youtube_short(duration)
-            if video_type == "All" or \
-               (video_type == "Regular Videos" and not is_short) or \
-               (video_type == "Shorts" and is_short):
+            if video_type == "All" or (video_type == "Regular Videos" and not is_short) or (video_type == "Shorts" and is_short):
                 statistics = item.get('statistics', {})
                 view_count = int(statistics.get('viewCount', 0))
                 like_count = int(statistics.get('likeCount', 0)) if 'likeCount' in statistics else 0
@@ -407,7 +400,7 @@ def analyze_thumbnails(videos, vision_client, openai_client):
             st.error(f"Error analyzing thumbnail for video {video['id']}: {e}")
     return results
 
-# Function to generate optimal thumbnail prompt based on multiple analyses with added elements
+# Function to generate optimal thumbnail prompt with added elements
 def generate_optimal_prompt(client, thumbnail_analyses, user_text):
     try:
         analysis_data = []
@@ -457,17 +450,17 @@ Your output must be highly actionable so that a designer can create the thumbnai
 def main():
     st.title("YouTube Thumbnail Analyzer")
     st.write("Find successful videos, analyze their thumbnails, and generate optimal thumbnail designs.")
-    
+
     # Initialize API clients silently
     vision_client, openai_client, youtube_api_key = setup_credentials()
     if not openai_client:
         st.error("OpenAI client not initialized. Please check your API key.")
         return
-    
-    # New option to choose between Title and Intro
+
+    # Option to choose between Title and Intro
     input_type = st.selectbox("Select Input Type", ["Title", "Intro"])
     user_text = st.text_area(f"Enter your video {input_type.lower()}:", height=100)
-    
+
     # Search configuration
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -478,13 +471,13 @@ def main():
         max_results = st.number_input("Number of Results", min_value=1, max_value=10, value=5)
     with col4:
         sort_by = st.selectbox("Sort Results By", ["Views", "Outlier Score"])
-    
+
     if youtube_api_key:
         search_button = st.button("Search YouTube")
     else:
         st.warning("YouTube API key is required for searching. Please provide a valid API key.")
         search_button = False
-    
+
     if search_button and user_text:
         with st.spinner("Searching YouTube and analyzing thumbnails..."):
             videos = search_youtube_videos(youtube_api_key, user_text, input_type, video_type, max_results, timeframe, openai_client)
@@ -498,7 +491,6 @@ def main():
                 thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
                 st.subheader(f"Found {len(videos)} Videos")
                 results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
-                
                 with results_tab:
                     for i, analysis in enumerate(thumbnail_analyses):
                         video = analysis['video']
@@ -516,7 +508,6 @@ def main():
                             st.markdown(analysis['prompt'])
                             st.markdown(f"[Watch Video on YouTube](https://www.youtube.com/watch?v={video['id']})")
                         st.divider()
-                
                 with optimal_tab:
                     st.subheader("Optimal Thumbnail Design")
                     with st.spinner("Generating optimal thumbnail design..."):
