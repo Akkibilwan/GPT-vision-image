@@ -14,13 +14,6 @@ from datetime import datetime, timedelta
 import re
 import hashlib
 
-# Set page configuration
-st.set_page_config(
-    page_title="YouTube Thumbnail Analyzer",
-    page_icon="🔍",
-    layout="wide"
-)
-
 #######################
 # SQLite Caching Setup
 #######################
@@ -39,7 +32,6 @@ def init_db():
     return conn
 
 def create_session_key(user_text, input_type, region, video_type, timeframe, max_results, sort_by):
-    # Create a unique key string then hash it for consistency
     key_str = f"{user_text}_{input_type}_{region}_{video_type}_{timeframe}_{max_results}_{sort_by}"
     return hashlib.md5(key_str.encode('utf-8')).hexdigest()
 
@@ -47,9 +39,7 @@ def get_cached_session(conn, session_key):
     cursor = conn.cursor()
     cursor.execute("SELECT optimal_prompts FROM session_cache WHERE session_key = ?", (session_key,))
     row = cursor.fetchone()
-    if row:
-        return row[0]
-    return None
+    return row[0] if row else None
 
 def cache_session(conn, session_key, optimal_prompts):
     cursor = conn.cursor()
@@ -58,10 +48,21 @@ def cache_session(conn, session_key, optimal_prompts):
     conn.commit()
 
 #######################
+# Additional Matching Function
+#######################
+
+def compute_match_score(video, query_keywords):
+    """Compute a simple match score based on how many of the query keywords appear in the video's title and description."""
+    keywords = [kw.strip().lower() for kw in query_keywords.split(",") if kw.strip()]
+    text = (video['title'] + " " + video['description']).lower()
+    # Count each keyword that appears at least once.
+    score = sum(1 for kw in keywords if kw in text)
+    return score
+
+#######################
 # API & Analysis Functions
 #######################
 
-# Setup API credentials (status messages removed)
 def setup_credentials():
     vision_client = None
     openai_client = None
@@ -334,7 +335,6 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                 return []
             video_ids = [item['id']['videoId'] for item in search_data['items'] if 'videoId' in item['id']]
         else:
-            # For USA or India, restrict search to specified channels
             channels = list(CHANNELS['finance'][region].values())
             for channel_id in channels:
                 if not channel_id.startswith("UC"):
@@ -392,8 +392,14 @@ def search_youtube_videos(youtube_api_key, user_text, input_type, video_type, ma
                     'is_short': is_short,
                     'duration': duration
                 }
+                # Compute a match score based on title and description overlap with query keywords
+                video_data['match_score'] = compute_match_score(video_data, keywords)
                 videos_list.append(video_data)
-        videos_list = calculate_outlier_scores(youtube_api_key, videos_list)
+        # Now sort based on chosen criteria combined with match score:
+        if sort_by == "Views":
+            videos_list.sort(key=lambda v: v['views'] * (v['match_score'] + 1), reverse=True)
+        else:
+            videos_list.sort(key=lambda v: v['outlier_score'] * (v['match_score'] + 1), reverse=True)
         return videos_list
     except Exception as e:
         st.error(f"Error searching YouTube videos: {e}")
@@ -516,9 +522,8 @@ Create a highly actionable, SINGLE COHESIVE PARAGRAPH guideline for designing an
 - Describe specific colors (with hex codes if possible)
 - Detail layout and composition (including typography, spatial arrangement, and balance)
 - Explain emotional triggers and branding elements
-- Include every element such that a designer can create the thumbnail exactly from your description.
+- Include every element so that a designer can create the thumbnail exactly from your description.
 """
-        # Define four different style instructions
         variants = [
             "Bold and dynamic design with strong typography and vibrant, contrasting colors.",
             "Minimalist and clean design with subtle details, ample white space, and modern fonts.",
@@ -537,7 +542,6 @@ Create a highly actionable, SINGLE COHESIVE PARAGRAPH guideline for designing an
                 max_tokens=1000
             )
             prompts.append(response.choices[0].message.content)
-        # Join the four variations with clear dividers
         combined_prompts = "\n\n" + ("-"*80 + "\n\n").join(prompts)
         return combined_prompts
     except Exception as e:
@@ -552,7 +556,6 @@ def main():
     st.title("YouTube Thumbnail Analyzer")
     st.write("Find successful videos, analyze their thumbnails, and generate optimal thumbnail designs.")
     
-    # Initialize API clients and SQLite DB
     vision_client, openai_client, youtube_api_key = setup_credentials()
     conn = init_db()
     
@@ -560,14 +563,10 @@ def main():
         st.error("OpenAI client not initialized. Please check your API key.")
         return
 
-    # Option to choose between Title and Intro for input
     input_type = st.selectbox("Select Input Type", ["Title", "Intro"])
     user_text = st.text_area(f"Enter your video {input_type.lower()}:", height=100)
-
-    # New Region filter
     region_filter = st.selectbox("Select Region", ["Global", "USA", "India"])
-
-    # Search configuration
+    
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         video_type = st.selectbox("Content Type", ["All", "Regular Videos", "Shorts"])
@@ -577,8 +576,7 @@ def main():
         max_results = st.number_input("Number of Results", min_value=1, max_value=10, value=5)
     with col4:
         sort_by = st.selectbox("Sort Results By", ["Views", "Outlier Score"])
-
-    # Create a session key based on parameters
+    
     session_key = create_session_key(user_text, input_type, region_filter, video_type, timeframe, max_results, sort_by)
     cached = get_cached_session(conn, session_key)
     
@@ -599,12 +597,11 @@ def main():
                     st.warning("No videos found matching your criteria. Try a different search.")
                     return
                 if sort_by == "Views":
-                    videos.sort(key=lambda x: x['views'], reverse=True)
+                    videos.sort(key=lambda v: v['views'] * (v['match_score']+1), reverse=True)
                 else:
-                    videos.sort(key=lambda x: x['outlier_score'], reverse=True)
+                    videos.sort(key=lambda v: v['outlier_score'] * (v['match_score']+1), reverse=True)
                 thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
                 optimal_prompts = generate_optimal_prompts(openai_client, thumbnail_analyses, user_text)
-                # Cache the result
                 cache_session(conn, session_key, optimal_prompts)
         results_tab, optimal_tab = st.tabs(["Video Results", "Optimal Thumbnail Design"])
         with results_tab:
