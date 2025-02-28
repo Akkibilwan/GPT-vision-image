@@ -51,7 +51,7 @@ def cache_session(conn, session_key, optimal_prompts):
 #######################
 
 def extract_video_id(url):
-    # Simple regex to extract video id from common YouTube URL formats
+    # Simple regex to extract video id from common YouTube URL formats.
     patterns = [
         r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:&|$)",
     ]
@@ -66,7 +66,7 @@ def extract_video_id(url):
 #######################
 
 def compute_match_score(video, query):
-    # Very simple case-insensitive substring match in the title.
+    # A simple case-insensitive substring match in the title.
     return 1 if query.lower() in video['title'].lower() else 0
 
 #######################
@@ -205,7 +205,7 @@ Analysis data:
         return None
 
 def extract_keywords(client, user_text, input_type):
-    # For title search, simply use the title itself.
+    # For title search, we simply use the title itself.
     return user_text.strip()
 
 def get_date_range(timeframe):
@@ -281,10 +281,9 @@ def fetch_video_details(youtube_api_key, video_ids, content_type):
     for item in data.get('items', []):
         duration = item['contentDetails']['duration']
         is_short = is_youtube_short(duration)
-        # Filter based on content type:
         if content_type == "Regular Videos" and is_short:
             continue
-        if content_type == "Shorts" and not is_youtube_short(duration):
+        if content_type == "Shorts" and not is_short:
             continue
         statistics = item.get('statistics', {})
         video = {
@@ -305,19 +304,19 @@ def fetch_video_details(youtube_api_key, video_ids, content_type):
     return videos
 
 def search_youtube_by_title(youtube_api_key, title, niche, finance_type, upload_time, content_type, sort_by, max_results):
-    published_after = get_date_range(upload_time)
+    # Use YouTube's native search by using the query directly.
     base_url = "https://www.googleapis.com/youtube/v3/search"
     params = {
         'q': title,
         'part': 'snippet',
-        'maxResults': max_results * 2,
+        'maxResults': 50,  # broad search; let YouTube decide relevance
         'type': 'video',
         'order': 'relevance',
-        'key': youtube_api_key,
-        'relevanceLanguage': 'en'
+        'key': youtube_api_key
     }
-    if published_after:
-        params['publishedAfter'] = published_after
+    if upload_time != "Lifetime":
+        # Only include publishedAfter if not lifetime.
+        params['publishedAfter'] = get_date_range(upload_time)
     response = requests.get(base_url, params=params)
     data = response.json()
     video_ids = []
@@ -327,6 +326,11 @@ def search_youtube_by_title(youtube_api_key, title, niche, finance_type, upload_
                 video_ids.append(item['id']['videoId'])
     video_ids = list(set(video_ids))
     videos = fetch_video_details(youtube_api_key, video_ids, content_type)
+    # Further filter by upload time if needed.
+    if upload_time != "Lifetime":
+        published_after = get_date_range(upload_time)
+        videos = [v for v in videos if v['published_at'] >= published_after]
+    # If niche is Finance, filter videos whose channel is in the allowed list.
     if niche == "Finance":
         allowed_channels = set()
         if finance_type == "All":
@@ -334,6 +338,13 @@ def search_youtube_by_title(youtube_api_key, title, niche, finance_type, upload_
         else:
             allowed_channels = set(FINANCE_CHANNELS[finance_type].values())
         videos = [v for v in videos if v['channel_id'] in allowed_channels]
+    for video in videos:
+        video['match_score'] = compute_match_score(video, title)
+    # Sort by match score combined with either views or outlier (if available)
+    if sort_by == "Views":
+        videos.sort(key=lambda v: v['views'] * (v['match_score'] + 1), reverse=True)
+    else:
+        videos.sort(key=lambda v: v.get('outlier_score', 1) * (v['match_score'] + 1), reverse=True)
     return videos[:max_results]
 
 def search_youtube_by_urls(youtube_api_key, urls, content_type, upload_time):
@@ -501,8 +512,9 @@ def main():
             if cached:
                 st.info("Loaded cached optimal prompts.")
                 optimal_prompts = cached
-                videos = []  # We use cached result for optimal prompts
-                thumbnail_analyses = [] 
+                # For simplicity, only show optimal prompts from cache.
+                videos = []
+                thumbnail_analyses = []
             else:
                 with st.spinner("Searching YouTube..."):
                     videos = search_youtube_by_title(youtube_api_key, title_input, niche, finance_type if niche=="Finance" else None, upload_time, content_type, sort_by, max_results)
@@ -527,6 +539,7 @@ def main():
                     return
                 with st.spinner("Analyzing thumbnails..."):
                     thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
+                # Use the first video's title as reference.
                 optimal_prompts = generate_optimal_prompts(openai_client, thumbnail_analyses, videos[0]['title'])
                 cache_session(conn, session_key, optimal_prompts)
         else:
