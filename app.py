@@ -53,7 +53,7 @@ def cache_session(conn, session_key, optimal_prompts):
 def extract_video_id(url):
     # Simple regex to extract video id from common YouTube URL formats
     patterns = [
-        r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:&|$)",  # v=VIDEO_ID or /VIDEO_ID
+        r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:&|$)",
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
@@ -62,12 +62,11 @@ def extract_video_id(url):
     return None
 
 #######################
-# Matching & Sorting (Broad Match via Title)
+# Matching & Sorting
 #######################
 
 def compute_match_score(video, query):
     # Very simple case-insensitive substring match in the title.
-    # You could expand this with NLP.
     return 1 if query.lower() in video['title'].lower() else 0
 
 #######################
@@ -164,7 +163,7 @@ def analyze_with_openai(client, base64_image):
                 {"role": "user", "content": [
                     {"type": "text", "text": "Analyze this YouTube thumbnail. Describe what you see in detail."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]},
+                ]}
             ],
             max_tokens=500
         )
@@ -206,13 +205,8 @@ Analysis data:
         return None
 
 def extract_keywords(client, user_text, input_type):
-    try:
-        # For title search, we simply use the title itself.
-        # (We can always expand this if needed.)
-        return user_text.strip()
-    except Exception as e:
-        st.error(f"Error extracting keywords: {e}")
-        return user_text
+    # For title search, simply use the title itself.
+    return user_text.strip()
 
 def get_date_range(timeframe):
     now = datetime.utcnow()
@@ -242,7 +236,7 @@ def is_youtube_short(duration_str):
 # YouTube Search Functions
 #######################
 
-# JSON for channel filtering (finance category)
+# JSON for finance channels
 FINANCE_CHANNELS = {
     "USA": {
         "Graham Stephan": "UCV6KDgJskWaEckne5aPA0aQ",
@@ -272,50 +266,6 @@ FINANCE_CHANNELS = {
     }
 }
 
-def search_youtube_by_title(youtube_api_key, title, niche, finance_type, upload_time, content_type, sort_by, max_results):
-    published_after = get_date_range(upload_time)
-    base_url = "https://www.googleapis.com/youtube/v3/search"
-    params = {
-        'q': title,
-        'part': 'snippet',
-        'maxResults': max_results * 2,
-        'type': 'video',
-        'order': 'relevance',
-        'key': youtube_api_key,
-        'relevanceLanguage': 'en'
-    }
-    if published_after:
-        params['publishedAfter'] = published_after
-
-    video_ids = []
-    if niche == "Global":
-        response = requests.get(base_url, params=params)
-        data = response.json()
-        if 'items' in data:
-            for item in data['items']:
-                if 'videoId' in item['id']:
-                    video_ids.append(item['id']['videoId'])
-    else:  # Finance niche
-        # If finance_type is "All", combine channels from both USA and India.
-        channels = []
-        if finance_type == "All":
-            channels = list(FINANCE_CHANNELS["USA"].values()) + list(FINANCE_CHANNELS["India"].values())
-        else:
-            channels = list(FINANCE_CHANNELS[finance_type].values())
-        for channel_id in channels:
-            if not channel_id.startswith("UC"):
-                continue
-            params_channel = params.copy()
-            params_channel['channelId'] = channel_id
-            response = requests.get(base_url, params=params_channel)
-            data = response.json()
-            if 'items' in data:
-                for item in data['items']:
-                    if 'videoId' in item['id']:
-                        video_ids.append(item['id']['videoId'])
-    video_ids = list(set(video_ids))[:max_results]
-    return fetch_video_details(youtube_api_key, video_ids, content_type)
-
 def fetch_video_details(youtube_api_key, video_ids, content_type):
     if not video_ids:
         return []
@@ -331,10 +281,10 @@ def fetch_video_details(youtube_api_key, video_ids, content_type):
     for item in data.get('items', []):
         duration = item['contentDetails']['duration']
         is_short = is_youtube_short(duration)
-        # Filter based on content_type
+        # Filter based on content type:
         if content_type == "Regular Videos" and is_short:
             continue
-        if content_type == "Shorts" and not is_short:
+        if content_type == "Shorts" and not is_youtube_short(duration):
             continue
         statistics = item.get('statistics', {})
         video = {
@@ -350,9 +300,41 @@ def fetch_video_details(youtube_api_key, video_ids, content_type):
             'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
             'is_short': is_short
         }
-        video['match_score'] = compute_match_score(video, title)
+        video['match_score'] = compute_match_score(video, video['title'])
         videos.append(video)
     return videos
+
+def search_youtube_by_title(youtube_api_key, title, niche, finance_type, upload_time, content_type, sort_by, max_results):
+    published_after = get_date_range(upload_time)
+    base_url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        'q': title,
+        'part': 'snippet',
+        'maxResults': max_results * 2,
+        'type': 'video',
+        'order': 'relevance',
+        'key': youtube_api_key,
+        'relevanceLanguage': 'en'
+    }
+    if published_after:
+        params['publishedAfter'] = published_after
+    response = requests.get(base_url, params=params)
+    data = response.json()
+    video_ids = []
+    if 'items' in data:
+        for item in data['items']:
+            if 'videoId' in item['id']:
+                video_ids.append(item['id']['videoId'])
+    video_ids = list(set(video_ids))
+    videos = fetch_video_details(youtube_api_key, video_ids, content_type)
+    if niche == "Finance":
+        allowed_channels = set()
+        if finance_type == "All":
+            allowed_channels = set(FINANCE_CHANNELS["USA"].values()).union(set(FINANCE_CHANNELS["India"].values()))
+        else:
+            allowed_channels = set(FINANCE_CHANNELS[finance_type].values())
+        videos = [v for v in videos if v['channel_id'] in allowed_channels]
+    return videos[:max_results]
 
 def search_youtube_by_urls(youtube_api_key, urls, content_type, upload_time):
     video_ids = []
@@ -360,17 +342,11 @@ def search_youtube_by_urls(youtube_api_key, urls, content_type, upload_time):
         vid = extract_video_id(url)
         if vid:
             video_ids.append(vid)
-    # Deduplicate
     video_ids = list(set(video_ids))
     videos = fetch_video_details(youtube_api_key, video_ids, content_type)
-    # Filter based on upload time:
     if upload_time != "Lifetime":
         published_after = get_date_range(upload_time)
-        filtered = []
-        for v in videos:
-            if v['published_at'] >= published_after:
-                filtered.append(v)
-        videos = filtered
+        videos = [v for v in videos if v['published_at'] >= published_after]
     return videos
 
 #######################
@@ -390,7 +366,7 @@ def generate_optimal_prompts(client, thumbnail_analyses, user_text):
                 'description': analysis['video']['description'][:300]
             })
         base_context = f"""
-Below are analyses of {len(analysis_data)} successful YouTube thumbnails in this niche, with their view counts and match scores:
+Below are analyses of {len(analysis_data)} successful YouTube thumbnails with their view counts and match scores:
 {json.dumps(analysis_data, indent=2)}
 
 Based on these analyses and the following video title:
@@ -411,7 +387,7 @@ The guideline must:
         ]
         prompts = []
         for idx, style in enumerate(variants):
-            variant_prompt = f"Variation {idx+1}: {base_context}\nStyle Instruction: {style}\nCreate a thumbnail design guideline which describes every element needed to produce a thumbnail that encapsulates the video title."
+            variant_prompt = f"Variation {idx+1}: {base_context}\nStyle Instruction: {style}\nCreate a thumbnail design guideline that describes every element needed to produce a thumbnail that encapsulates the video title."
             response = client.ChatCompletion.create(
                 model="gpt-4o",
                 messages=[
@@ -478,7 +454,6 @@ def main():
     
     if input_type == "Title":
         title_input = st.text_input("Enter video title:")
-        # Niche filter for Title search
         niche = st.selectbox("Select Niche", ["Global", "Finance"])
         finance_type = None
         if niche == "Finance":
@@ -486,7 +461,6 @@ def main():
     else:
         st.markdown("Enter up to 20 Video URLs:")
         urls = []
-        # Use session_state to track additional URL fields.
         if "url_count" not in st.session_state:
             st.session_state.url_count = 1
         url0 = st.text_input("Video URL 1", key="url0")
@@ -527,16 +501,11 @@ def main():
             if cached:
                 st.info("Loaded cached optimal prompts.")
                 optimal_prompts = cached
-                videos = []  # In this case, we don't re-fetch videos
-                thumbnail_analyses = []  # For simplicity, only show optimal prompts
+                videos = []  # We use cached result for optimal prompts
+                thumbnail_analyses = [] 
             else:
                 with st.spinner("Searching YouTube..."):
-                    if niche == "Global":
-                        videos = search_youtube_by_title(youtube_api_key, title_input, "Global", None, upload_time, content_type, sort_by, max_results)
-                    else:
-                        finance_sel = finance_type if finance_type else "All"
-                        videos = search_youtube_by_title(youtube_api_key, title_input, "Finance", finance_sel, upload_time, content_type, sort_by, max_results)
-                # Analyze thumbnails if videos are found
+                    videos = search_youtube_by_title(youtube_api_key, title_input, niche, finance_type if niche=="Finance" else None, upload_time, content_type, sort_by, max_results)
                 if not videos:
                     st.warning("No videos found matching your criteria. Try a different search.")
                     return
@@ -558,7 +527,6 @@ def main():
                     return
                 with st.spinner("Analyzing thumbnails..."):
                     thumbnail_analyses = analyze_thumbnails(videos, vision_client, openai_client)
-                # For video URL input, use the first video's title as reference for optimal prompt generation.
                 optimal_prompts = generate_optimal_prompts(openai_client, thumbnail_analyses, videos[0]['title'])
                 cache_session(conn, session_key, optimal_prompts)
         else:
